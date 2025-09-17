@@ -1,6 +1,8 @@
 import pygame
 import random
 import sys
+import json
+import os
 
 pygame.init()
 
@@ -19,14 +21,19 @@ FONT_COLOR = (119, 110, 101)
 
 FONT = pygame.font.SysFont("comicsans", 48, bold=True)
 SMALL_FONT = pygame.font.SysFont("comicsans", 26, bold=True)
-SCORE_FONT = pygame.font.SysFont("comicsans", 20, bold=True)  # 스코어 전용 폰트 추가
+SCORE_FONT = pygame.font.SysFont("comicsans", 20, bold=True)
 
 WINDOW = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("2048 (space to restart)")
 
+LEADERBOARD_FILE = "leaderboard.json"
+RESET_PASSWORD = "reset2048"  # 리더보드 리셋 비밀번호
+
 score = 0
 leaderboard = []
 game_over = False
+password_input = ""  # 비밀번호 입력 상태
+entering_password = False  # 비밀번호 입력 모드
 
 COLOR_MAP = {
     0: (205, 193, 180),
@@ -46,7 +53,36 @@ COLOR_MAP = {
 def get_color(value):
     return COLOR_MAP.get(value, (100, 80, 40))
 
+def load_leaderboard():
+    """리더보드를 파일에서 불러오기"""
+    global leaderboard
+    try:
+        if os.path.exists(LEADERBOARD_FILE):
+            with open(LEADERBOARD_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                leaderboard = data if isinstance(data, list) else []
+                print(f"리더보드 로드 완료: {leaderboard}")
+        else:
+            leaderboard = []
+            print("리더보드 파일이 없어서 빈 리스트로 시작")
+    except Exception as e:
+        print(f"리더보드 로드 오류: {e}")
+        leaderboard = []
+
+def reset_leaderboard():
+    """리더보드를 초기화하고 저장"""
+    global leaderboard
+    leaderboard = []
+    if save_leaderboard():
+        print("리더보드가 성공적으로 리셋되었습니다!")
+        return True
+    else:
+        print("리더보드 리셋 실패!")
+        return False
+
 def draw(grid):
+    global entering_password, password_input
+    
     WINDOW.fill(BACKGROUND_COLOR)
     
     # 타일
@@ -67,33 +103,70 @@ def draw(grid):
     pygame.draw.rect(WINDOW, OUTLINE_COLOR, (0, 0, GAME_WIDTH, HEIGHT), 
                      OUTLINE_THICKNESS, border_radius=8)
     
-    # 스코어 표시 (줄바꿈으로 처리)
+    # 오른쪽 패널과 게임 영역 구분선
+    pygame.draw.line(WINDOW, OUTLINE_COLOR, (GAME_WIDTH, 0), (GAME_WIDTH, HEIGHT), 3)
+    
+    # 스코어 표시
     score_label = SCORE_FONT.render("Score:", True, FONT_COLOR)
     score_value = SCORE_FONT.render(str(score), True, FONT_COLOR)
     
     WINDOW.blit(score_label, (GAME_WIDTH + 10, 20))
     WINDOW.blit(score_value, (GAME_WIDTH + 10, 45))
     
+    # 스코어와 리더보드 사이 구분선
+    pygame.draw.line(WINDOW, OUTLINE_COLOR, 
+                     (GAME_WIDTH + 10, 80), (WIDTH - 10, 80), 2)
+    
     # 리더보드
     lb_title = SMALL_FONT.render("Leaderboard:", True, FONT_COLOR)
     WINDOW.blit(lb_title, (GAME_WIDTH + 10, 90))
     
-    for i, s in enumerate(leaderboard[:10]):
-        # 리더보드 항목도 길면 줄바꿈
-        entry_text = f"{i+1}. {s}"
-        if len(entry_text) > 15:  # 너무 길면 줄임
+    # 리더보드 리셋 안내
+    reset_hint = pygame.font.SysFont("comicsans", 14).render("Press R to reset", True, FONT_COLOR)
+    WINDOW.blit(reset_hint, (GAME_WIDTH + 10, 115))
+    
+    for i, s in enumerate(leaderboard[:9]):  # 9개만 표시 (안내 문구 때문에)
+        # 리더보드 항목 표시
+        entry_text = f"{i+1}. {s:,}"  # 천 단위 콤마 추가
+        if len(entry_text) > 15:  # 너무 길면 k 단위로 표시
             entry_text = f"{i+1}. {s//1000}k"
         entry = SMALL_FONT.render(entry_text, True, FONT_COLOR)
-        WINDOW.blit(entry, (GAME_WIDTH + 10, 120 + i * 25))
+        WINDOW.blit(entry, (GAME_WIDTH + 10, 140 + i * 25))
+    
+    # 비밀번호 입력 모드
+    if entering_password:
+        # 반투명 오버레이
+        overlay = pygame.Surface((WIDTH, HEIGHT))
+        overlay.set_alpha(128)
+        overlay.fill((0, 0, 0))
+        WINDOW.blit(overlay, (0, 0))
+        
+        # 비밀번호 입력 창
+        input_box = pygame.Rect(WIDTH//2 - 150, HEIGHT//2 - 50, 300, 100)
+        pygame.draw.rect(WINDOW, (255, 255, 255), input_box)
+        pygame.draw.rect(WINDOW, OUTLINE_COLOR, input_box, 3)
+        
+        # 텍스트
+        title_text = SMALL_FONT.render("Enter Reset Password:", True, FONT_COLOR)
+        password_text = SMALL_FONT.render("*" * len(password_input), True, FONT_COLOR)
+        hint_text = pygame.font.SysFont("comicsans", 16).render("ESC to cancel, ENTER to confirm", True, FONT_COLOR)
+        
+        WINDOW.blit(title_text, (WIDTH//2 - title_text.get_width()//2, HEIGHT//2 - 40))
+        WINDOW.blit(password_text, (WIDTH//2 - password_text.get_width()//2, HEIGHT//2 - 10))
+        WINDOW.blit(hint_text, (WIDTH//2 - hint_text.get_width()//2, HEIGHT//2 + 20))
     
     # 게임 오버 시 표시
-    if game_over:
+    if game_over and not entering_password:
         go_text = FONT.render("GAME OVER!", True, (255, 0, 0))
         restart_text = SMALL_FONT.render("Press SPACE to restart", True, FONT_COLOR)
+        save_text = SMALL_FONT.render("Score saved!", True, (0, 150, 0))
+        
         WINDOW.blit(go_text, (GAME_WIDTH//2 - go_text.get_width()//2, 
                              HEIGHT//2 - go_text.get_height()//2))
         WINDOW.blit(restart_text, (GAME_WIDTH//2 - restart_text.get_width()//2, 
                                   HEIGHT//2 + 40))
+        WINDOW.blit(save_text, (GAME_WIDTH//2 - save_text.get_width()//2, 
+                               HEIGHT//2 + 70))
     
     pygame.display.update()
 
@@ -175,20 +248,37 @@ def can_move(grid):
 
 def update_leaderboard():
     global leaderboard, score
-    leaderboard.append(score)
-    leaderboard = sorted(leaderboard, reverse=True)[:10]
+    print(f"게임 오버! 현재 점수: {score:,}")
+    
+    if score > 0:  # 0점은 저장하지 않음
+        leaderboard.append(score)
+        leaderboard = sorted(set(leaderboard), reverse=True)[:10]  # 중복 제거 후 상위 10개
+        print(f"업데이트된 리더보드: {leaderboard}")
+        
+        if save_leaderboard():
+            print("리더보드 저장 성공!")
+        else:
+            print("리더보드 저장 실패!")
+    else:
+        print("0점이므로 리더보드에 저장하지 않음")
 
 def reset_game():
-    global score, game_over
+    global score, game_over, entering_password, password_input
     grid = [[0]*COLS for _ in range(ROWS)]
     score = 0
     game_over = False
+    entering_password = False
+    password_input = ""
     add_random_tile(grid)
     add_random_tile(grid)
     return grid
 
 def main():
-    global score, game_over
+    global score, game_over, entering_password, password_input
+    
+    # 게임 시작 시 리더보드 불러오기
+    load_leaderboard()
+    
     clock = pygame.time.Clock()
     grid = reset_game()
     running = True
@@ -200,34 +290,69 @@ def main():
             if event.type == pygame.QUIT:
                 running = False
                 break
-                
+            
             if event.type == pygame.KEYDOWN:
-                if game_over:
-                    if event.key == pygame.K_SPACE:
-                        grid = reset_game()
+                # 비밀번호 입력 모드일 때
+                if entering_password:
+                    if event.key == pygame.K_ESCAPE:
+                        # ESC로 취소
+                        entering_password = False
+                        password_input = ""
+                        print("리더보드 리셋 취소")
+                    elif event.key == pygame.K_RETURN:
+                        # 엔터로 확인
+                        if password_input == RESET_PASSWORD:
+                            reset_leaderboard()
+                            print("리더보드 리셋 성공!")
+                        else:
+                            print("잘못된 비밀번호입니다.")
+                        entering_password = False
+                        password_input = ""
+                    elif event.key == pygame.K_BACKSPACE:
+                        # 백스페이스로 문자 삭제
+                        password_input = password_input[:-1]
+                    else:
+                        # 문자 입력 (영문, 숫자만)
+                        char = event.unicode
+                        if char.isprintable() and len(password_input) < 20:
+                            password_input += char
+                
+                # 일반 게임 모드일 때
                 else:
-                    dir_map = {
-                        pygame.K_LEFT: 'left',
-                        pygame.K_RIGHT: 'right',
-                        pygame.K_UP: 'up',
-                        pygame.K_DOWN: 'down'
-                    }
-                    
-                    if event.key in dir_map:
-                        direction = dir_map[event.key]
-                        moved, gained, new_grid = move_grid(grid, direction)
+                    if event.key == pygame.K_r and not game_over:
+                        # R키로 리더보드 리셋 모드 진입
+                        entering_password = True
+                        password_input = ""
+                        print("리더보드 리셋 모드 진입")
+                    elif game_over:
+                        if event.key == pygame.K_SPACE:
+                            grid = reset_game()
+                    else:
+                        dir_map = {
+                            pygame.K_LEFT: 'left',
+                            pygame.K_RIGHT: 'right',
+                            pygame.K_UP: 'up',
+                            pygame.K_DOWN: 'down'
+                        }
                         
-                        if moved:
-                            grid = new_grid
-                            score += gained
-                            add_random_tile(grid)
+                        if event.key in dir_map:
+                            direction = dir_map[event.key]
+                            moved, gained, new_grid = move_grid(grid, direction)
                             
-                            if not can_move(grid):
-                                game_over = True
-                                update_leaderboard()
+                            if moved:
+                                grid = new_grid
+                                score += gained
+                                add_random_tile(grid)
+                                
+                                if not can_move(grid):
+                                    game_over = True
+                                    print("게임 오버 감지!")
+                                    update_leaderboard()
         
         draw(grid)
     
+    # 게임 종료 시 리더보드 저장
+    save_leaderboard()
     pygame.quit()
     sys.exit()
 
