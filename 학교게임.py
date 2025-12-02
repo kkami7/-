@@ -17,7 +17,7 @@ GAME_WIDTH = WIDTH - RIGHT_PANEL
 COLORS = {
     'bg': (205, 192, 180), 'outline': (187, 173, 160), 'font': (119, 110, 101),
     'white': (255, 255, 255), 'black': (0, 0, 0), 'red': (255, 0, 0),
-    'green': (0, 255, 0), 'blue': (135, 206, 250), 'yellow': (255, 255, 0),
+    'green': (0, 255, 0), 'blue': (0, 0, 255), 'yellow': (255, 255, 0),
     'pink': (255, 182, 193), 'brown': (139, 69, 19), 'dark_gray': (50, 50, 50),
     'purple': (148, 0, 211), 'gold': (255, 215, 0), 'cyan': (0, 255, 255),
     'orange': (255, 165, 0), 'lime': (50, 205, 50)
@@ -28,6 +28,244 @@ MENU, GAME_2048, GAME_BREAKOUT, GAME_TYPING, GAME_TETRIS, GAME_BLOCKBLAST, LEADE
 
 # 관리자 모드 전역 변수
 ADMIN_MODE = False
+
+# 현재 학번 저장
+CURRENT_STUDENT_ID = None
+
+# ==================== 파티클 효과 시스템 ====================
+class EffectParticle:
+    """개별 파티클 클래스 (효과용)"""
+    def __init__(self, x, y, vx, vy, color, size, lifetime):
+        self.x = x
+        self.y = y
+        self.vx = vx
+        self.vy = vy
+        self.color = color
+        self.size = size
+        self.lifetime = lifetime
+        self.age = 0
+
+    def update(self):
+        """파티클 업데이트"""
+        self.x += self.vx
+        self.y += self.vy
+        self.vy += 0.3  # 중력 효과
+        self.age += 1
+        return self.age < self.lifetime
+
+    def draw(self, surface):
+        """파티클 그리기"""
+        alpha = int(255 * (1 - self.age / self.lifetime))
+        color = (*self.color[:3], alpha)
+        size = int(self.size * (1 - self.age / self.lifetime))
+        if size > 0:
+            surf = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA)
+            pygame.draw.circle(surf, color, (size, size), size)
+            surface.blit(surf, (int(self.x - size), int(self.y - size)))
+
+class ParticleSystem:
+    """파티클 시스템 관리"""
+    def __init__(self):
+        self.particles = []
+
+    def add_explosion(self, x, y, color, count=20):
+        """폭발 효과"""
+        for _ in range(count):
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(2, 8)
+            vx = math.cos(angle) * speed
+            vy = math.sin(angle) * speed
+            size = random.uniform(3, 8)
+            lifetime = random.randint(20, 40)
+            self.particles.append(EffectParticle(x, y, vx, vy, color, size, lifetime))
+
+    def add_sparkle(self, x, y, count=10):
+        """반짝임 효과"""
+        colors = [(255, 255, 0), (255, 215, 0), (255, 255, 255)]
+        for _ in range(count):
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(1, 3)
+            vx = math.cos(angle) * speed
+            vy = math.sin(angle) * speed
+            size = random.uniform(2, 5)
+            lifetime = random.randint(15, 30)
+            color = random.choice(colors)
+            self.particles.append(EffectParticle(x, y, vx, vy, color, size, lifetime))
+
+    def add_confetti(self, x, y, count=30):
+        """색종이 효과"""
+        colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0),
+                  (255, 0, 255), (0, 255, 255), (255, 165, 0)]
+        for _ in range(count):
+            vx = random.uniform(-5, 5)
+            vy = random.uniform(-10, -3)
+            size = random.uniform(4, 10)
+            lifetime = random.randint(40, 80)
+            color = random.choice(colors)
+            self.particles.append(EffectParticle(x, y, vx, vy, color, size, lifetime))
+
+    def update(self):
+        """모든 파티클 업데이트"""
+        self.particles = [p for p in self.particles if p.update()]
+
+    def draw(self, surface):
+        """모든 파티클 그리기"""
+        for p in self.particles:
+            p.draw(surface)
+
+    def clear(self):
+        """모든 파티클 제거"""
+        self.particles.clear()
+
+# 전역 파티클 시스템
+PARTICLE_SYSTEM = ParticleSystem()
+
+# ==================== 떠오르는 텍스트 시스템 ====================
+class FloatingText:
+    """떠오르는 점수 텍스트"""
+    def __init__(self, x, y, text, color, size='medium'):
+        self.x = x
+        self.y = y
+        self.text = text
+        self.color = color
+        self.lifetime = 60  # 1초
+        self.age = 0
+        self.size = size
+        self.vy = -2  # 위로 떠오르는 속도
+
+    def update(self):
+        self.y += self.vy
+        self.age += 1
+        return self.age < self.lifetime
+
+    def draw(self, surface):
+        alpha = int(255 * (1 - self.age / self.lifetime))
+        if alpha > 0:
+            font = FONTS[self.size]
+            text_surf = font.render(self.text, True, self.color)
+            # 알파 적용
+            text_surf.set_alpha(alpha)
+            # 크기 애니메이션 (처음에 크게 나타났다가 작아짐)
+            scale = 1.0 + (1 - self.age / self.lifetime) * 0.3
+            if scale != 1.0:
+                new_width = int(text_surf.get_width() * scale)
+                new_height = int(text_surf.get_height() * scale)
+                text_surf = pygame.transform.scale(text_surf, (new_width, new_height))
+            surface.blit(text_surf, (int(self.x - text_surf.get_width() // 2), int(self.y)))
+
+class FloatingTextSystem:
+    """떠오르는 텍스트 시스템"""
+    def __init__(self):
+        self.texts = []
+
+    def add_text(self, x, y, text, color=(255, 215, 0), size='medium'):
+        self.texts.append(FloatingText(x, y, text, color, size))
+
+    def update(self):
+        self.texts = [t for t in self.texts if t.update()]
+
+    def draw(self, surface):
+        for t in self.texts:
+            t.draw(surface)
+
+    def clear(self):
+        self.texts.clear()
+
+# 전역 떠오르는 텍스트 시스템
+FLOATING_TEXT_SYSTEM = FloatingTextSystem()
+
+# ==================== 학번 입력 시스템 ====================
+class StudentIDInput:
+    """학번 입력 화면"""
+    def __init__(self):
+        self.student_id = ""
+        self.error_msg = ""
+        self.animation_time = 0
+
+    def validate_id(self, student_id):
+        """학번 유효성 검증"""
+        if not student_id:
+            return False, "학번을 입력해주세요"
+        if not student_id.isdigit():
+            return False, "숫자만 입력 가능합니다"
+        if len(student_id) != 5:
+            return False, "5자리 숫자를 입력해주세요"
+        return True, ""
+
+    def draw(self):
+        """학번 입력 화면 그리기"""
+        WINDOW.fill(COLORS['bg'])
+
+        # 제목
+        title = FONTS['huge'].render("학번 입력", True, COLORS['font'])
+        WINDOW.blit(title, (WIDTH//2 - title.get_width()//2, 150))
+
+        # 설명
+        desc = FONTS['small'].render("게임 시작 전 학번을 입력해주세요", True, COLORS['font'])
+        WINDOW.blit(desc, (WIDTH//2 - desc.get_width()//2, 220))
+
+        # 입력 박스
+        box_rect = pygame.Rect(WIDTH//2 - 200, 300, 400, 80)
+        box_color = (255, 255, 255) if not self.error_msg else (255, 200, 200)
+        pygame.draw.rect(WINDOW, box_color, box_rect, border_radius=15)
+        pygame.draw.rect(WINDOW, COLORS['outline'], box_rect, 4, border_radius=15)
+
+        # 입력된 학번 표시
+        if self.student_id:
+            id_text = FONTS['large'].render(self.student_id, True, COLORS['font'])
+        else:
+            id_text = FONTS['medium'].render("학번 입력...", True, (150, 150, 150))
+        WINDOW.blit(id_text, (WIDTH//2 - id_text.get_width()//2, 320))
+
+        # 에러 메시지
+        if self.error_msg:
+            error_surf = FONTS['small'].render(self.error_msg, True, COLORS['red'])
+            WINDOW.blit(error_surf, (WIDTH//2 - error_surf.get_width()//2, 400))
+
+        # 안내 문구
+        help_texts = [
+            "숫자 5자리를 입력하세요",
+            "ENTER: 확인 | ESC: 취소"
+        ]
+        for i, text in enumerate(help_texts):
+            surf = FONTS['small'].render(text, True, (100, 100, 100))
+            WINDOW.blit(surf, (WIDTH//2 - surf.get_width()//2, 450 + i * 30))
+
+        pygame.display.update()
+
+    def handle_event(self, event):
+        """이벤트 처리"""
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                return None  # 취소
+            elif event.key == pygame.K_RETURN:
+                valid, msg = self.validate_id(self.student_id)
+                if valid:
+                    return self.student_id
+                else:
+                    self.error_msg = msg
+            elif event.key == pygame.K_BACKSPACE:
+                self.student_id = self.student_id[:-1]
+                self.error_msg = ""
+            elif event.unicode.isdigit() and len(self.student_id) < 5:
+                self.student_id += event.unicode
+                self.error_msg = ""
+        return "input"  # 계속 입력 중
+
+    def run(self):
+        """학번 입력 루프"""
+        clock = pygame.time.Clock()
+        while True:
+            clock.tick(FPS)
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return None
+                result = self.handle_event(event)
+                if result != "input":
+                    return result
+
+            self.draw()
 
 # ==================== 비밀번호 관리 ====================
 class PasswordManager:
@@ -122,50 +360,124 @@ TETRIS_COLORS = {
     'S': COLORS['green'],
     'Z': COLORS['red'],
     'J': COLORS['blue'],
-    'L': COLORS['orange']
+    'L': COLORS['orange']  # 주황색
 }
 
 # ==================== 블록블라스트 설정 ====================
 BLOCKBLAST_GRID_SIZE = 8
-BLOCKBLAST_CELL_SIZE = 70
+BLOCKBLAST_CELL_SIZE = 60
 BLOCKBLAST_OFFSET_X = (GAME_WIDTH - BLOCKBLAST_GRID_SIZE * BLOCKBLAST_CELL_SIZE) // 2
-BLOCKBLAST_OFFSET_Y = 50
+BLOCKBLAST_OFFSET_Y = 30
 
-# 블록블라스트 블록 모양들
-BLOCKBLAST_SHAPES = [
-    # 1x1
+# 블록블라스트 블록 모양들 (난이도별 분류)
+
+# 쉬운 블록 (초반용 - 작고 단순)
+BLOCKBLAST_SHAPES_EASY = [
+    # 1x1 작은 블록
     [[1]],
-    # 2x2
+
+    # 2칸 블록
+    [[1, 1]],
+    [[1], [1]],
+
+    # 2x2 정사각형
     [[1, 1], [1, 1]],
-    # 3x3
-    [[1, 1, 1], [1, 1, 1], [1, 1, 1]],
-    # L자형
+
+    # 3칸 블록
+    [[1, 1, 1]],
+    [[1], [1], [1]],
+
+    # ㄱ자형 작은거 (3칸)
+    [[1, 1], [1, 0]],
+    [[1, 1], [0, 1]],
+]
+
+# 보통 블록
+BLOCKBLAST_SHAPES_NORMAL = [
+    # 4칸 블록
+    [[1, 1, 1, 1]],
+    [[1], [1], [1], [1]],
+
+    # L자형 (4가지 방향)
     [[1, 0], [1, 0], [1, 1]],
     [[0, 1], [0, 1], [1, 1]],
     [[1, 1], [1, 0], [1, 0]],
     [[1, 1], [0, 1], [0, 1]],
-    # 일자형
-    [[1, 1, 1]],
-    [[1], [1], [1]],
-    [[1, 1, 1, 1]],
-    [[1], [1], [1], [1]],
-    [[1, 1, 1, 1, 1]],
-    [[1], [1], [1], [1], [1]],
-    # T자형
+
+    # T자형 (4가지 방향)
     [[1, 1, 1], [0, 1, 0]],
     [[0, 1], [1, 1], [0, 1]],
     [[0, 1, 0], [1, 1, 1]],
     [[1, 0], [1, 1], [1, 0]],
+
     # Z자형
     [[1, 1, 0], [0, 1, 1]],
     [[0, 1], [1, 1], [1, 0]],
+
+    # S자형
+    [[0, 1, 1], [1, 1, 0]],
+    [[1, 0], [1, 1], [0, 1]],
+
+    # ㄱ자형 (2x2에서 1칸 빠진 형태)
+    [[1, 1], [1, 0]],
+    [[1, 1], [0, 1]],
+    [[1, 0], [1, 1]],
+    [[0, 1], [1, 1]],
+
+    # ㅗ자형
+    [[1, 0], [1, 1]],
+    [[0, 1], [1, 1]],
 ]
 
-BLOCKBLAST_COLORS = [
-    (255, 107, 107), (255, 159, 64), (255, 206, 84),
-    (75, 192, 192), (54, 162, 235), (153, 102, 255),
-    (255, 99, 132), (255, 159, 243), (201, 203, 207)
+# 어려운 블록
+BLOCKBLAST_SHAPES_HARD = [
+    # 5칸 블록
+    [[1, 1, 1, 1, 1]],
+    [[1], [1], [1], [1], [1]],
+
+    # 3x3 정사각형
+    [[1, 1, 1], [1, 1, 1], [1, 1, 1]],
+
+    # 큰 L자형
+    [[1, 0, 0], [1, 0, 0], [1, 1, 1]],
+    [[0, 0, 1], [0, 0, 1], [1, 1, 1]],
+    [[1, 1, 1], [1, 0, 0], [1, 0, 0]],
+    [[1, 1, 1], [0, 0, 1], [0, 0, 1]],
+
+    # 2x3 블록
+    [[1, 1, 1], [1, 1, 1]],
+
+    # 3x2 블록
+    [[1, 1], [1, 1], [1, 1]],
+
+    # 대각선 2칸 블록
+    [[1, 0], [0, 1]],
+    [[0, 1], [1, 0]],
+
+    # 대각선 3칸 블록
+    [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+    [[0, 0, 1], [0, 1, 0], [1, 0, 0]],
 ]
+
+# 호환성을 위한 전체 블록 리스트
+BLOCKBLAST_SHAPES = BLOCKBLAST_SHAPES_EASY + BLOCKBLAST_SHAPES_NORMAL + BLOCKBLAST_SHAPES_HARD
+
+# 블록블라스트 색상 (더 밝고 화려하게 개선)
+BLOCKBLAST_COLORS = [
+    (255, 69, 58),    # 생생한 빨강
+    (255, 159, 10),   # 밝은 오렌지
+    (255, 214, 10),   # 선명한 노랑
+    (48, 209, 88),    # 생생한 초록
+    (90, 200, 250),   # 하늘색
+    (191, 90, 242),   # 보라색
+    (255, 55, 95),    # 분홍
+    (100, 210, 255),  # 청록색
+    (175, 82, 222),   # 자주색
+]
+
+# 블록블라스트 배경색 (숫자가 잘 보이도록)
+BLOCKBLAST_BG = (240, 245, 250)        # 밝은 회색-파랑
+BLOCKBLAST_GRID_COLOR = (200, 210, 220) # 부드러운 회색
 
 # ==================== 블록깨기 설정 ====================
 PADDLE_CONFIG = {'width': 120, 'height': 20, 'speed': 8}
@@ -291,7 +603,7 @@ def init_fonts():
 
 FONTS = init_fonts()
 WINDOW = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("게임 모음 - 테트리스 추가!")
+pygame.display.set_caption("게임모음집")
 
 # ==================== 리더보드 관리 ====================
 class LeaderboardManager:
@@ -332,27 +644,65 @@ class LeaderboardManager:
             return False
     
     @staticmethod
-    def update(game_type, score, difficulty=None, stage=None):
-        """리더보드 업데이트"""
+    def update(game_type, score, difficulty=None, stage=None, student_id=None):
+        """리더보드 업데이트 (학번 포함)"""
         if score <= 0:
             return LeaderboardManager.load(game_type, difficulty)
-        
+
         lb = LeaderboardManager.load(game_type, difficulty)
-        
-        if game_type == GAME_TYPING and stage is not None:
-            entry = {'stage': stage, 'score': score}
-            lb.append(entry)
-            lb = sorted(lb, key=lambda x: (-x['stage'], -x['score']))[:10]
+
+        # 학번이 있으면 딕셔너리 형태로 저장
+        if student_id:
+            if game_type == GAME_TYPING and stage is not None:
+                entry = {'student_id': student_id, 'stage': stage, 'score': score}
+                lb.append(entry)
+                lb = sorted(lb, key=lambda x: (-x.get('stage', 0) if isinstance(x, dict) else 0,
+                                               -x.get('score', 0) if isinstance(x, dict) else 0))[:10]
+            else:
+                entry = {'student_id': student_id, 'score': score}
+                lb.append(entry)
+                # 블록깨기는 시간이므로 오름차순, 나머지는 내림차순
+                if game_type == GAME_BREAKOUT:
+                    lb = sorted(lb, key=lambda x: x.get('score', 999999) if isinstance(x, dict) else x)[:10]
+                else:
+                    lb = sorted(lb, key=lambda x: -x.get('score', 0) if isinstance(x, dict) else -x)[:10]
         else:
-            lb.append(score)
-            lb = sorted(list(set(lb)), reverse=(game_type != GAME_BREAKOUT))[:10]
-        
+            # 하위 호환성: 학번 없이 저장 (기존 방식)
+            if game_type == GAME_TYPING and stage is not None:
+                entry = {'stage': stage, 'score': score}
+                lb.append(entry)
+                lb = sorted(lb, key=lambda x: (-x['stage'], -x['score']) if isinstance(x, dict) else (0, 0))[:10]
+            else:
+                lb.append(score)
+                lb = sorted(list(set(lb)), reverse=(game_type != GAME_BREAKOUT))[:10]
+
         LeaderboardManager.save(game_type, lb, difficulty)
         return lb
     
     @staticmethod
     def reset(game_type, difficulty=None):
         return LeaderboardManager.save(game_type, [], difficulty)
+
+    @staticmethod
+    def delete_entry(game_type, index, difficulty=None):
+        """리더보드 항목 삭제"""
+        lb = LeaderboardManager.load(game_type, difficulty)
+        if 0 <= index < len(lb):
+            lb.pop(index)
+            LeaderboardManager.save(game_type, lb, difficulty)
+            return True
+        return False
+
+    @staticmethod
+    def edit_entry(game_type, index, new_student_id, difficulty=None):
+        """리더보드 항목의 학번 수정"""
+        lb = LeaderboardManager.load(game_type, difficulty)
+        if 0 <= index < len(lb):
+            if isinstance(lb[index], dict):
+                lb[index]['student_id'] = new_student_id
+                LeaderboardManager.save(game_type, lb, difficulty)
+                return True
+        return False
 
 # ==================== UI 유틸리티 ====================
 class UIDrawer:
@@ -380,34 +730,65 @@ class UIDrawer:
     
     @staticmethod
     def leaderboard(scores, y, is_time=False, is_typing=False):
-        """리더보드 표시"""
-        if is_typing:
-            WINDOW.blit(FONTS['medium'].render("최고 기록:", True, COLORS['font']), (GAME_WIDTH + 10, y))
-            y += 25
-            WINDOW.blit(FONTS['tiny'].render("(단계/점수)", True, COLORS['font']), (GAME_WIDTH + 10, y))
-            y += 20
-        else:
-            title = "최고 기록:" if is_time else "순위표:"
-            WINDOW.blit(FONTS['medium'].render(title, True, COLORS['font']), (GAME_WIDTH + 10, y))
-            y += 30
-        
-        WINDOW.blit(FONTS['tiny'].render("F12: 리셋", True, COLORS['font']), (GAME_WIDTH + 10, y))
-        y += 18
-        WINDOW.blit(FONTS['tiny'].render("ESC: 메뉴", True, COLORS['font']), (GAME_WIDTH + 10, y))
+        """리더보드 표시 (학번 포함)"""
+        # 제목
+        title = "최고 기록" if is_time or is_typing else "순위표"
+        title_surf = FONTS['medium'].render(title, True, COLORS['font'])
+        WINDOW.blit(title_surf, (GAME_WIDTH + 10, y))
+        y += 35
+
+        # 구분선
+        pygame.draw.line(WINDOW, COLORS['outline'], (GAME_WIDTH + 10, y), (WIDTH - 10, y), 2)
+        y += 15
+
+        # ESC 안내
+        esc_surf = FONTS['tiny'].render("ESC: 메뉴", True, (120, 120, 120))
+        WINDOW.blit(esc_surf, (GAME_WIDTH + 10, y))
         y += 25
-        
-        for i, s in enumerate(scores[:6]):
-            if is_typing and isinstance(s, dict):
-                txt = f"{i+1}. {s['stage']}단계"
-                txt2 = f"   {s['score']:,}점"
-                WINDOW.blit(FONTS['small'].render(txt, True, COLORS['font']), (GAME_WIDTH + 10, y + i * 45))
-                WINDOW.blit(FONTS['tiny'].render(txt2, True, (100, 100, 100)), (GAME_WIDTH + 10, y + i * 45 + 18))
-            elif is_time:
-                txt = f"{i+1}. {s}초"
-                WINDOW.blit(FONTS['small'].render(txt, True, COLORS['font']), (GAME_WIDTH + 10, y + i * 28))
+
+        # 순위 표시
+        medal_colors = [(255, 215, 0), (192, 192, 192), (205, 127, 50)]  # 금, 은, 동
+
+        for i, s in enumerate(scores[:3]):
+            # 순위 배지
+            medal_color = medal_colors[i] if i < 3 else COLORS['font']
+            rank_surf = FONTS['medium'].render(f"{i+1}", True, medal_color)
+            WINDOW.blit(rank_surf, (GAME_WIDTH + 15, y))
+
+            if isinstance(s, dict):
+                student_id = s.get('student_id', '익명')
+
+                if is_typing:
+                    stage = s.get('stage', 0)
+                    score = s.get('score', 0)
+                    # 학번
+                    id_surf = FONTS['small'].render(student_id, True, COLORS['font'])
+                    WINDOW.blit(id_surf, (GAME_WIDTH + 50, y + 3))
+                    # 상세 정보
+                    detail_surf = FONTS['tiny'].render(f"{stage}단계  {score:,}점", True, (100, 100, 100))
+                    WINDOW.blit(detail_surf, (GAME_WIDTH + 50, y + 22))
+                else:
+                    score = s.get('score', 0)
+                    # 학번
+                    id_surf = FONTS['small'].render(student_id, True, COLORS['font'])
+                    WINDOW.blit(id_surf, (GAME_WIDTH + 50, y + 3))
+                    # 점수/시간
+                    if is_time:
+                        detail_text = f"{score}초"
+                    else:
+                        detail_text = f"{score:,}점" if score < 10000 else f"{score//1000}k점"
+                    detail_surf = FONTS['tiny'].render(detail_text, True, (100, 100, 100))
+                    WINDOW.blit(detail_surf, (GAME_WIDTH + 50, y + 22))
             else:
-                txt = f"{i+1}. {s:,}점" if len(f"{s:,}") < 10 else f"{i+1}. {s//1000}k점"
-                WINDOW.blit(FONTS['small'].render(txt, True, COLORS['font']), (GAME_WIDTH + 10, y + i * 28))
+                # 하위 호환성
+                if is_time:
+                    txt = f"{s}초"
+                else:
+                    txt = f"{s:,}점" if s < 10000 else f"{s//1000}k점"
+                score_surf = FONTS['small'].render(txt, True, COLORS['font'])
+                WINDOW.blit(score_surf, (GAME_WIDTH + 50, y + 8))
+
+            y += 50
     
     @staticmethod
     def admin_mode_overlay():
@@ -475,14 +856,20 @@ class UIDrawer:
 
 # ==================== 메뉴 ====================
 def run_menu():
-    global ADMIN_MODE
+    global ADMIN_MODE, CURRENT_STUDENT_ID
     entering_admin_pw = False
     admin_pw_input = ""
-    
+    clock = pygame.time.Clock()
+
     while True:
+        clock.tick(FPS)
+
+        # 배경
         WINDOW.fill(COLORS['bg'])
+
+        # 제목
         UIDrawer.text_centered("게임 선택", 40, 'large')
-        
+
         games = [
             (GAME_2048, "1. 2048 게임", pygame.K_1),
             (GAME_BREAKOUT, "2. 블록깨기", pygame.K_2),
@@ -491,25 +878,30 @@ def run_menu():
             (GAME_BLOCKBLAST, "5. 블록블라스트", pygame.K_5),
             (LEADERBOARD, "6. 리더보드", pygame.K_6)
         ]
-        
+
         buttons = [pygame.Rect(WIDTH//2 - 200, 110 + i * 70, 400, 60) for i in range(len(games))]
+
+        # 버튼 그리기
         for btn, (_, name, _) in zip(buttons, games):
             UIDrawer.button(btn, name)
-        
+
+        # 안내 문구
         UIDrawer.text_centered("클릭하거나 숫자키를 눌러 선택하세요", 660, 'small')
-        
+
+        # 관리자 모드
         if ADMIN_MODE:
             UIDrawer.admin_mode_overlay()
-        
+
+        # 비밀번호 입력
         if entering_admin_pw:
             UIDrawer.admin_password_overlay(admin_pw_input)
-        
+
         pygame.display.update()
-        
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return None
-            
+
             if event.type == pygame.KEYDOWN:
                 if entering_admin_pw:
                     if event.key == pygame.K_ESCAPE:
@@ -518,6 +910,7 @@ def run_menu():
                     elif event.key == pygame.K_RETURN:
                         if PasswordManager.verify(admin_pw_input):
                             ADMIN_MODE = not ADMIN_MODE
+                            PARTICLE_SYSTEM.add_confetti(WIDTH//2, HEIGHT//2, 50)
                         entering_admin_pw = False
                         admin_pw_input = ""
                     elif event.key == pygame.K_BACKSPACE:
@@ -530,12 +923,32 @@ def run_menu():
                     else:
                         for game_type, _, key in games:
                             if event.key == key:
-                                return game_type
-            
+                                # 리더보드는 학번 불필요
+                                if game_type == LEADERBOARD:
+                                    return game_type
+
+                                # 게임 시작 전 학번 입력
+                                student_input = StudentIDInput()
+                                result = student_input.run()
+                                if result:
+                                    CURRENT_STUDENT_ID = result
+                                    return game_type
+
             if event.type == pygame.MOUSEBUTTONDOWN and not entering_admin_pw:
                 for i, btn in enumerate(buttons):
                     if btn.collidepoint(pygame.mouse.get_pos()):
-                        return games[i][0]
+                        game_type = games[i][0]
+
+                        # 리더보드는 학번 불필요
+                        if game_type == LEADERBOARD:
+                            return game_type
+
+                        # 게임 시작 전 학번 입력
+                        student_input = StudentIDInput()
+                        result = student_input.run()
+                        if result:
+                            CURRENT_STUDENT_ID = result
+                            return game_type
 
 # ==================== 리더보드 화면 ====================
 def run_leaderboard():
@@ -565,10 +978,18 @@ def run_leaderboard():
         WINDOW.blit(title_2048, (x1 + box_width//2 - title_2048.get_width()//2, y_start + 12))
         pygame.draw.line(WINDOW, COLORS['outline'], (x1 + 15, y_start + 45), (x1 + box_width - 15, y_start + 45), 2)
         
-        for i, score in enumerate(lb_2048[:10]):
-            txt = f"{i+1}. {score:,}점"
-            y_pos = y_start + 58 + i * 38
-            WINDOW.blit(FONTS['small'].render(txt, True, COLORS['font']), (x1 + 15, y_pos))
+        for i, entry in enumerate(lb_2048[:10]):
+            y_pos = y_start + 58 + i * 36
+            if isinstance(entry, dict):
+                student_id = entry.get('student_id', '익명')
+                score = entry.get('score', 0)
+                txt = f"{i+1}. {student_id[:6]}"
+                txt2 = f"   {score:,}점"
+                WINDOW.blit(FONTS['tiny'].render(txt, True, COLORS['font']), (x1 + 10, y_pos))
+                WINDOW.blit(FONTS['tiny'].render(txt2, True, (100, 100, 100)), (x1 + 10, y_pos + 14))
+            else:
+                txt = f"{i+1}. {entry:,}점"
+                WINDOW.blit(FONTS['tiny'].render(txt, True, COLORS['font']), (x1 + 10, y_pos))
         
         # 블록깨기 리더보드 (2번째)
         x2 = start_x + box_width + margin
@@ -592,9 +1013,14 @@ def run_leaderboard():
             diff_title = FONTS['small'].render(f"[{diff_name}]", True, color)
             WINDOW.blit(diff_title, (x2 + 15, y_diff))
             
-            for i, time in enumerate(lb_break[:5]):
-                txt = f"{i+1}. {time}초"
-                WINDOW.blit(FONTS['tiny'].render(txt, True, COLORS['font']), (x2 + 20, y_diff + 25 + i * 20))
+            for i, entry in enumerate(lb_break[:5]):
+                if isinstance(entry, dict):
+                    student_id = entry.get('student_id', '익명')
+                    time = entry.get('score', 0)
+                    txt = f"{i+1}. {student_id[:6]}: {time}초"
+                else:
+                    txt = f"{i+1}. {entry}초"
+                WINDOW.blit(FONTS['tiny'].render(txt, True, COLORS['font']), (x2 + 12, y_diff + 25 + i * 20))
         
         # 케이크던지기 리더보드 (3번째)
         lb_typing = LeaderboardManager.load(GAME_TYPING)
@@ -612,13 +1038,16 @@ def run_leaderboard():
         for i, entry in enumerate(lb_typing[:10]):
             y_pos = y_start + 58 + i * 38
             if isinstance(entry, dict):
-                stage_txt = f"{i+1}. {entry['stage']}단계"
-                score_txt = f"    {entry['score']:,}"
-                WINDOW.blit(FONTS['small'].render(stage_txt, True, COLORS['font']), (x3 + 15, y_pos))
-                WINDOW.blit(FONTS['tiny'].render(score_txt, True, (100, 100, 100)), (x3 + 15, y_pos + 18))
+                student_id = entry.get('student_id', '익명')
+                stage = entry.get('stage', 0)
+                score = entry.get('score', 0)
+                txt1 = f"{i+1}. {student_id[:6]}"
+                txt2 = f"   {stage}단계 {score:,}점"
+                WINDOW.blit(FONTS['tiny'].render(txt1, True, COLORS['font']), (x3 + 10, y_pos))
+                WINDOW.blit(FONTS['tiny'].render(txt2, True, (100, 100, 100)), (x3 + 10, y_pos + 14))
             else:
                 txt = f"{i+1}. {entry:,}"
-                WINDOW.blit(FONTS['small'].render(txt, True, COLORS['font']), (x3 + 15, y_pos))
+                WINDOW.blit(FONTS['tiny'].render(txt, True, COLORS['font']), (x3 + 10, y_pos))
         
         # 테트리스 리더보드 (4번째)
         lb_tetris = LeaderboardManager.load(GAME_TETRIS)
@@ -633,10 +1062,18 @@ def run_leaderboard():
         WINDOW.blit(title_tetris, (x4 + box_width//2 - title_tetris.get_width()//2, y_start + 12))
         pygame.draw.line(WINDOW, COLORS['outline'], (x4 + 15, y_start + 40), (x4 + box_width - 15, y_start + 40), 2)
         
-        for i, score in enumerate(lb_tetris[:10]):
-            txt = f"{i+1}. {score:,}점"
-            y_pos = y_start + 53 + i * 37
-            WINDOW.blit(FONTS['tiny'].render(txt, True, COLORS['font']), (x4 + 15, y_pos))
+        for i, entry in enumerate(lb_tetris[:10]):
+            y_pos = y_start + 53 + i * 36
+            if isinstance(entry, dict):
+                student_id = entry.get('student_id', '익명')
+                score = entry.get('score', 0)
+                txt = f"{i+1}. {student_id[:6]}"
+                txt2 = f"   {score:,}점"
+                WINDOW.blit(FONTS['tiny'].render(txt, True, COLORS['font']), (x4 + 10, y_pos))
+                WINDOW.blit(FONTS['tiny'].render(txt2, True, (100, 100, 100)), (x4 + 10, y_pos + 14))
+            else:
+                txt = f"{i+1}. {entry:,}점"
+                WINDOW.blit(FONTS['tiny'].render(txt, True, COLORS['font']), (x4 + 10, y_pos))
         
         # 블록블라스트 리더보드 (5번째)
         lb_blast = LeaderboardManager.load(GAME_BLOCKBLAST)
@@ -651,20 +1088,224 @@ def run_leaderboard():
         WINDOW.blit(title_blast, (x5 + box_width//2 - title_blast.get_width()//2, y_start + 12))
         pygame.draw.line(WINDOW, COLORS['outline'], (x5 + 15, y_start + 40), (x5 + box_width - 15, y_start + 40), 2)
         
-        for i, score in enumerate(lb_blast[:10]):
-            txt = f"{i+1}. {score:,}점"
-            y_pos = y_start + 53 + i * 37
-            WINDOW.blit(FONTS['tiny'].render(txt, True, COLORS['font']), (x5 + 15, y_pos))
+        for i, entry in enumerate(lb_blast[:10]):
+            y_pos = y_start + 53 + i * 36
+            if isinstance(entry, dict):
+                student_id = entry.get('student_id', '익명')
+                score = entry.get('score', 0)
+                txt = f"{i+1}. {student_id[:6]}"
+                txt2 = f"   {score:,}점"
+                WINDOW.blit(FONTS['tiny'].render(txt, True, COLORS['font']), (x5 + 10, y_pos))
+                WINDOW.blit(FONTS['tiny'].render(txt2, True, (100, 100, 100)), (x5 + 10, y_pos + 14))
+            else:
+                txt = f"{i+1}. {entry:,}점"
+                WINDOW.blit(FONTS['tiny'].render(txt, True, COLORS['font']), (x5 + 10, y_pos))
         
-        UIDrawer.text_centered("ESC: 메뉴로 돌아가기", 750, 'medium')
+        # 안내 문구
+        help_y = 720
+        if ADMIN_MODE:
+            UIDrawer.text_centered("F10: 편집 모드 | ESC: 메뉴", help_y, 'small', (255, 100, 100))
+            UIDrawer.text_centered("(관리자 모드 활성화 중)", help_y + 25, 'tiny', (200, 0, 0))
+        else:
+            UIDrawer.text_centered("ESC: 메뉴로 돌아가기", help_y, 'medium')
+
         pygame.display.update()
-        
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return None
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     return MENU
+                elif event.key == pygame.K_F10 and ADMIN_MODE:
+                    # 편집 모드 진입
+                    PARTICLE_SYSTEM.add_confetti(WIDTH//2, HEIGHT//2, 50)
+                    result = run_admin_leaderboard_editor()
+                    if result == MENU:
+                        return MENU
+
+# ==================== 관리자 리더보드 편집 ====================
+def run_admin_leaderboard_editor():
+    """관리자 리더보드 편집 모드"""
+    selected_game = None
+    selected_difficulty = None
+    selected_index = None
+    editing_id = False
+    new_id_input = ""
+    message = ""
+    message_time = 0
+
+    games = [
+        (GAME_2048, "2048", None),
+        (GAME_BREAKOUT, "블록깨기 (쉬움)", "easy"),
+        (GAME_BREAKOUT, "블록깨기 (보통)", "normal"),
+        (GAME_BREAKOUT, "블록깨기 (어려움)", "hard"),
+        (GAME_TYPING, "케이크던지기", None),
+        (GAME_TETRIS, "테트리스", None),
+        (GAME_BLOCKBLAST, "블록블라스트", None)
+    ]
+
+    clock = pygame.time.Clock()
+
+    while True:
+        clock.tick(FPS)
+        WINDOW.fill(COLORS['bg'])
+
+        # 제목
+        UIDrawer.text_centered("관리자 리더보드 편집", 30, 'large', (255, 0, 0))
+
+        if selected_game is None:
+            # 게임 선택 화면
+            UIDrawer.text_centered("편집할 게임을 선택하세요", 90, 'medium')
+
+            y_offset = 140
+            for i, (game, name, diff) in enumerate(games):
+                btn = pygame.Rect(WIDTH//2 - 200, y_offset + i * 50, 400, 45)
+                pygame.draw.rect(WINDOW, (255, 220, 220), btn, border_radius=10)
+                pygame.draw.rect(WINDOW, (200, 0, 0), btn, 3, border_radius=10)
+                txt = FONTS['small'].render(f"{i+1}. {name}", True, COLORS['font'])
+                WINDOW.blit(txt, txt.get_rect(center=btn.center))
+
+            UIDrawer.text_centered("ESC: 돌아가기", 700, 'small')
+
+        else:
+            # 항목 편집 화면
+            lb = LeaderboardManager.load(selected_game, selected_difficulty)
+            game_name = [name for g, name, d in games if g == selected_game and d == selected_difficulty][0]
+
+            UIDrawer.text_centered(f"[{game_name}] 편집 중", 80, 'medium')
+
+            y_offset = 120
+            for i, entry in enumerate(lb[:15]):
+                y = y_offset + i * 32
+
+                # 항목 표시
+                if isinstance(entry, dict):
+                    student_id = entry.get('student_id', '익명')
+                    score = entry.get('score', 0)
+                    stage = entry.get('stage', '')
+                    if stage:
+                        txt = f"{i+1}. {student_id} - {stage}단계 {score:,}점"
+                    else:
+                        txt = f"{i+1}. {student_id} - {score:,}점"
+                else:
+                    txt = f"{i+1}. {entry:,}"
+
+                color = (255, 200, 200) if selected_index == i else COLORS['font']
+                surf = FONTS['tiny'].render(txt, True, color)
+                WINDOW.blit(surf, (WIDTH//2 - 250, y))
+
+            # 안내
+            help_texts = [
+                "숫자 입력: 항목 선택",
+                "DELETE: 선택 항목 삭제",
+                "E: 학번 수정",
+                "ESC: 게임 선택으로"
+            ]
+            y_help = 600
+            for i, text in enumerate(help_texts):
+                surf = FONTS['tiny'].render(text, True, (100, 100, 100))
+                WINDOW.blit(surf, (WIDTH//2 - 150, y_help + i * 20))
+
+            # 선택된 항목 표시
+            if selected_index is not None:
+                txt = f"선택: {selected_index + 1}번 항목"
+                surf = FONTS['small'].render(txt, True, (255, 0, 0))
+                WINDOW.blit(surf, (WIDTH//2 - surf.get_width()//2, 550))
+
+            # 학번 수정 모드
+            if editing_id:
+                overlay = pygame.Surface((WIDTH, HEIGHT))
+                overlay.set_alpha(128)
+                overlay.fill(COLORS['black'])
+                WINDOW.blit(overlay, (0, 0))
+
+                box = pygame.Rect(WIDTH//2 - 200, HEIGHT//2 - 80, 400, 160)
+                pygame.draw.rect(WINDOW, COLORS['white'], box, border_radius=15)
+                pygame.draw.rect(WINDOW, (200, 0, 0), box, 4, border_radius=15)
+
+                texts = [
+                    ("새 학번 입력:", 'small'),
+                    (new_id_input if new_id_input else "(입력...)", 'medium'),
+                    ("ENTER: 확인 | ESC: 취소", 'tiny')
+                ]
+                for i, (text, font) in enumerate(texts):
+                    color = COLORS['font'] if i != 1 else (0, 0, 255)
+                    surf = FONTS[font].render(text, True, color)
+                    WINDOW.blit(surf, (WIDTH//2 - surf.get_width()//2, HEIGHT//2 - 60 + i * 40))
+
+        # 메시지 표시
+        if message and message_time > 0:
+            msg_surf = FONTS['medium'].render(message, True, (0, 200, 0))
+            WINDOW.blit(msg_surf, (WIDTH//2 - msg_surf.get_width()//2, HEIGHT - 50))
+            message_time -= 1
+
+        # 파티클
+        PARTICLE_SYSTEM.update()
+        PARTICLE_SYSTEM.draw(WINDOW)
+
+        pygame.display.update()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return MENU
+
+            if event.type == pygame.KEYDOWN:
+                if editing_id:
+                    # 학번 수정 모드
+                    if event.key == pygame.K_ESCAPE:
+                        editing_id = False
+                        new_id_input = ""
+                    elif event.key == pygame.K_RETURN and new_id_input:
+                        if LeaderboardManager.edit_entry(selected_game, selected_index, new_id_input, selected_difficulty):
+                            message = "학번이 수정되었습니다!"
+                            message_time = 120
+                            PARTICLE_SYSTEM.add_confetti(WIDTH//2, HEIGHT//2, 30)
+                        editing_id = False
+                        new_id_input = ""
+                        selected_index = None
+                    elif event.key == pygame.K_BACKSPACE:
+                        new_id_input = new_id_input[:-1]
+                    elif event.unicode.isdigit() and len(new_id_input) < 10:
+                        new_id_input += event.unicode
+
+                elif selected_game is None:
+                    # 게임 선택 모드
+                    if event.key == pygame.K_ESCAPE:
+                        return LEADERBOARD
+                    elif pygame.K_1 <= event.key <= pygame.K_9:
+                        idx = event.key - pygame.K_1
+                        if idx < len(games):
+                            selected_game, _, selected_difficulty = games[idx]
+                            selected_index = None
+
+                else:
+                    # 항목 편집 모드
+                    if event.key == pygame.K_ESCAPE:
+                        selected_game = None
+                        selected_index = None
+                    elif event.key == pygame.K_DELETE and selected_index is not None:
+                        # 삭제 확인
+                        if LeaderboardManager.delete_entry(selected_game, selected_index, selected_difficulty):
+                            message = "항목이 삭제되었습니다!"
+                            message_time = 120
+                            PARTICLE_SYSTEM.add_explosion(WIDTH//2, HEIGHT//2, (255, 0, 0), 30)
+                            selected_index = None
+                    elif event.key == pygame.K_e and selected_index is not None:
+                        # 학번 수정 시작
+                        editing_id = True
+                        new_id_input = ""
+                    elif pygame.K_1 <= event.key <= pygame.K_9:
+                        # 항목 선택
+                        idx = event.key - pygame.K_1
+                        lb = LeaderboardManager.load(selected_game, selected_difficulty)
+                        if idx < len(lb):
+                            selected_index = idx
+                    elif event.key == pygame.K_0:
+                        idx = 9
+                        lb = LeaderboardManager.load(selected_game, selected_difficulty)
+                        if idx < len(lb):
+                            selected_index = idx
 
 # ==================== 2048 게임 ====================
 class Game2048:
@@ -672,10 +1313,11 @@ class Game2048:
         self.grid = [[0] * GRID_SIZE for _ in range(GRID_SIZE)]
         self.score = 0
         self.game_over = False
+        self.game_over_timer = 0
         self.entering_pw = False
         self.pw_input = ""
         self.leaderboard = LeaderboardManager.load(GAME_2048)
-        
+
         for _ in range(2):
             self.add_tile()
     
@@ -732,7 +1374,7 @@ class Game2048:
             
             if not self.can_move():
                 self.game_over = True
-                self.leaderboard = LeaderboardManager.update(GAME_2048, self.score)
+                self.leaderboard = LeaderboardManager.update(GAME_2048, self.score, student_id=CURRENT_STUDENT_ID)
         
         return moved
     
@@ -813,9 +1455,16 @@ class Game2048:
 def run_2048():
     game = Game2048()
     clock = pygame.time.Clock()
-    
+
     while True:
         clock.tick(FPS)
+
+        # 게임 오버 후 5초 자동 메뉴 복귀
+        if game.game_over:
+            game.game_over_timer += 1
+            if game.game_over_timer >= 300:  # 5초 (60 FPS * 5)
+                return MENU
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return None
@@ -850,6 +1499,7 @@ class Tetris:
         self.lines_cleared = 0
         self.level = 1
         self.game_over = False
+        self.game_over_timer = 0
         self.entering_pw = False
         self.pw_input = ""
         self.leaderboard = LeaderboardManager.load(GAME_TETRIS)
@@ -857,6 +1507,7 @@ class Tetris:
         self.fall_time = 0
         self.fall_speed = 1000  # 초기 낙하 속도 (1초) - 500에서 1000으로 증가
         self.game_start_time = pygame.time.get_ticks()  # 게임 시작 시간
+        self.time_limit = 60  # 1분 제한 (초 단위)
         
         # 테트리오 점수 시스템
         self.combo = -1  # 콤보 카운터 (-1은 콤보 없음)
@@ -962,7 +1613,7 @@ class Tetris:
         # 게임 오버 확인
         if not self.valid_position():
             self.game_over = True
-            self.leaderboard = LeaderboardManager.update(GAME_TETRIS, self.score)
+            self.leaderboard = LeaderboardManager.update(GAME_TETRIS, self.score, student_id=CURRENT_STUDENT_ID)
     
     def clear_lines(self):
         """완성된 줄 제거"""
@@ -1045,7 +1696,7 @@ class Tetris:
         # 위치 초기화
         if not self.valid_position():
             self.game_over = True
-            self.leaderboard = LeaderboardManager.update(GAME_TETRIS, self.score)
+            self.leaderboard = LeaderboardManager.update(GAME_TETRIS, self.score, student_id=CURRENT_STUDENT_ID)
     
     def hard_drop(self):
         """하드 드롭 (한번에 떨어뜨리기)"""
@@ -1064,11 +1715,17 @@ class Tetris:
         """게임 업데이트"""
         if self.game_over:
             return
-        
-        # 시간에 따른 낙하 속도 증가 (2분마다 10% 빠르게, 최소 200ms)
+
+        # 시간 제한 확인
         elapsed_seconds = (pygame.time.get_ticks() - self.game_start_time) / 1000
-        speed_multiplier = max(0.2, 1.0 - (elapsed_seconds / 120) * 0.1)  # 2분(120초)마다 10% 감소
-        current_fall_speed = max(200, int(1000 * speed_multiplier))
+        if elapsed_seconds >= self.time_limit:
+            self.game_over = True
+            self.leaderboard = LeaderboardManager.update(GAME_TETRIS, self.score, student_id=CURRENT_STUDENT_ID)
+            return
+
+        # 시간에 따른 낙하 속도 증가 (1분 안에 점점 빨라짐, 최소 300ms)
+        speed_multiplier = max(0.3, 1.0 - (elapsed_seconds / 60) * 0.5)  # 1분(60초)동안 점점 빨라짐
+        current_fall_speed = max(300, int(1000 * speed_multiplier))
         
         # 자동 낙하
         self.fall_time += dt
@@ -1191,7 +1848,15 @@ class Tetris:
         WINDOW.blit(FONTS['small'].render("라인:", True, COLORS['font']), (GAME_WIDTH + 10, y))
         WINDOW.blit(FONTS['small'].render(str(self.lines_cleared), True, COLORS['font']), (GAME_WIDTH + 10, y + 25))
         y += 50
-        
+
+        # 타이머 표시
+        elapsed_seconds = (pygame.time.get_ticks() - self.game_start_time) / 1000
+        remaining_time = max(0, self.time_limit - elapsed_seconds)
+        timer_color = COLORS['red'] if remaining_time <= 10 else COLORS['font']
+        WINDOW.blit(FONTS['small'].render("시간:", True, timer_color), (GAME_WIDTH + 10, y))
+        WINDOW.blit(FONTS['small'].render(f"{int(remaining_time)}초", True, timer_color), (GAME_WIDTH + 10, y + 25))
+        y += 50
+
         # 콤보와 B2B 표시
         if self.combo >= 0:
             WINDOW.blit(FONTS['small'].render("콤보:", True, COLORS['yellow']), (GAME_WIDTH + 10, y))
@@ -1332,17 +1997,23 @@ def run_tetris():
     """테트리스 게임 실행"""
     game = Tetris()
     clock = pygame.time.Clock()
-    
+
     while True:
         dt = clock.tick(FPS)
-        
+
+        # 게임 오버 후 5초 자동 메뉴 복귀
+        if game.game_over:
+            game.game_over_timer += 1
+            if game.game_over_timer >= 300:  # 5초 (60 FPS * 5)
+                return MENU
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return None
             result = game.handle_event(event)
             if result != GAME_TETRIS:
                 return result
-        
+
         game.update(dt)
         game.draw()
 
@@ -1582,14 +2253,21 @@ def run_breakout():
     paddle_items = []  # 패들 아이템 리스트
     
     game_over, game_won, game_started = False, False, False
+    game_over_timer = 0
     entering_pw, pw_input = False, ""
     start_time, elapsed = None, 0
-    
+
     lb = LeaderboardManager.load(GAME_BREAKOUT, difficulty)
     clock = pygame.time.Clock()
-    
+
     while True:
         clock.tick(FPS)
+
+        # 게임 오버 후 5초 자동 메뉴 복귀
+        if game_over:
+            game_over_timer += 1
+            if game_over_timer >= 300:  # 5초 (60 FPS * 5)
+                return MENU
         
         if game_started and not game_over and start_time:
             elapsed = (pygame.time.get_ticks() - start_time) / 1000
@@ -1719,7 +2397,7 @@ def run_breakout():
             
             if all(not b.active for b in bricks) and not game_over:
                 game_over, game_won = True, True
-                lb = LeaderboardManager.update(GAME_BREAKOUT, int(elapsed), difficulty)
+                lb = LeaderboardManager.update(GAME_BREAKOUT, int(elapsed), difficulty, student_id=CURRENT_STUDENT_ID)
         
         WINDOW.fill(COLORS['bg'])
         pygame.draw.rect(WINDOW, (50, 50, 50), (0, 0, GAME_WIDTH, HEIGHT))
@@ -1960,19 +2638,27 @@ def run_typing():
     stage, score, hp, max_hp = 1, 0, 3, 3
     robots, hearts, cakes, particles = [], [], [], []
     spawn_timer, spawn_delay, heart_spawn_timer = 0, 90, 0
-    
+
     target_score = STAGE_SCORE_REQUIREMENTS.get(stage, 33350 + (stage - 50) * 770)
-    
+
     current_input, composing_text = "", ""
     game_over, stage_clear = False, False
+    game_over_timer = 0
     entering_pw, pw_input = False, ""
     start_time, elapsed = pygame.time.get_ticks(), 0
-    
+
     lb = LeaderboardManager.load(GAME_TYPING)
     clock = pygame.time.Clock()
-    
+
     while True:
         clock.tick(FPS)
+
+        # 게임 오버 후 5초 자동 메뉴 복귀
+        if game_over:
+            game_over_timer += 1
+            if game_over_timer >= 300:  # 5초 (60 FPS * 5)
+                pygame.key.stop_text_input()
+                return MENU
         
         if not game_over and not stage_clear:
             elapsed = (pygame.time.get_ticks() - start_time) / 1000
@@ -2095,7 +2781,7 @@ def run_typing():
             
             if hp <= 0:
                 game_over = True
-                lb = LeaderboardManager.update(GAME_TYPING, score, stage=stage)
+                lb = LeaderboardManager.update(GAME_TYPING, score, stage=stage, student_id=CURRENT_STUDENT_ID)
         
         current_concept = None
         for concept_stage in sorted(STAGE_CONCEPTS.keys(), reverse=True):
@@ -2124,10 +2810,7 @@ def run_typing():
         WINDOW.blit(score_text, (GAME_WIDTH // 2 - score_text.get_width() // 2, 15))
         WINDOW.blit(FONTS['tiny'].render("목표:", True, COLORS['black']), (GAME_WIDTH - 160, 15))
         WINDOW.blit(progress_text, (GAME_WIDTH - 160, 30))
-        
-        concept_text = FONTS['tiny'].render(f"테마: {current_concept['name']}", True, COLORS['black'])
-        WINDOW.blit(concept_text, (10, 45))
-        
+
         for i in range(max_hp):
             color = COLORS['red'] if i < hp else (100, 100, 100)
             x, y = 10 + i * 40, 75
@@ -2232,22 +2915,58 @@ class BlockBlast:
         self.grid = [[0] * BLOCKBLAST_GRID_SIZE for _ in range(BLOCKBLAST_GRID_SIZE)]
         self.score = 0
         self.game_over = False
+        self.game_over_timer = 0
         self.entering_pw = False
         self.pw_input = ""
         self.leaderboard = LeaderboardManager.load(GAME_BLOCKBLAST)
-        
+
         # 현재 사용 가능한 3개의 블록
         self.available_pieces = [self.new_piece() for _ in range(3)]
         self.selected_piece_idx = None
         self.dragging = False
         self.mouse_x = 0
         self.mouse_y = 0
-        self.drag_offset_x = 0  # 드래그 시작 시 마우스와 블록 중심의 오프셋
+        self.drag_offset_x = 0
         self.drag_offset_y = 0
+
+        # 애니메이션 및 효과
+        self.clearing_rows = []  # 제거 중인 행
+        self.clearing_cols = []  # 제거 중인 열
+        self.clear_animation_timer = 0
+        self.combo_count = 0
+        self.combo_display_timer = 0
+        self.perfect_display_timer = 0
+        self.is_new_record = False
+        self.record_display_timer = 0
+
+        # 추가 시각 효과
+        self.background_time = 0  # 배경 애니메이션용 타이머
+        self.screen_shake_intensity = 0  # 화면 흔들림 강도
+        self.screen_shake_timer = 0  # 화면 흔들림 타이머
+        self.pulse_effects = []  # 펄스 효과 리스트 [(x, y, timer), ...]
+        self.game_over_fade = 0  # 게임 오버 페이드 아웃
+        self.hovered_piece_idx = None  # 호버 중인 블록 인덱스
+        self.need_game_over_check = False  # 게임오버 체크 필요 플래그
     
     def new_piece(self):
-        """새로운 블록 생성"""
-        shape = random.choice(BLOCKBLAST_SHAPES)
+        """새로운 블록 생성 (점수에 따라 난이도 조절)"""
+        # 점수에 따라 블록 풀 선택
+        if self.score < 150:
+            # 초반: 쉬운 블록만
+            available_shapes = BLOCKBLAST_SHAPES_EASY
+        elif self.score < 400:
+            # 중반: 쉬운 블록 + 보통 블록
+            available_shapes = BLOCKBLAST_SHAPES_EASY + BLOCKBLAST_SHAPES_NORMAL
+        elif self.score < 700:
+            # 후반: 쉬운 + 보통 많이, 어려운 조금
+            available_shapes = (BLOCKBLAST_SHAPES_EASY * 2 +
+                               BLOCKBLAST_SHAPES_NORMAL * 2 +
+                               BLOCKBLAST_SHAPES_HARD)
+        else:
+            # 최후반: 모든 블록
+            available_shapes = BLOCKBLAST_SHAPES
+
+        shape = random.choice(available_shapes)
         return BlockBlastPiece(shape)
     
     def can_place(self, piece, grid_row, grid_col):
@@ -2276,39 +2995,133 @@ class BlockBlast:
         self.clear_lines()
     
     def clear_lines(self):
-        """완성된 행과 열 제거"""
-        cleared_count = 0
-        
+        """완성된 행과 열 제거 (애니메이션 포함)"""
         # 행 체크
         rows_to_clear = []
         for r in range(BLOCKBLAST_GRID_SIZE):
             if all(self.grid[r][c] != 0 for c in range(BLOCKBLAST_GRID_SIZE)):
                 rows_to_clear.append(r)
-        
+
         # 열 체크
         cols_to_clear = []
         for c in range(BLOCKBLAST_GRID_SIZE):
             if all(self.grid[r][c] != 0 for r in range(BLOCKBLAST_GRID_SIZE)):
                 cols_to_clear.append(c)
-        
-        # 행 제거
-        for r in rows_to_clear:
-            for c in range(BLOCKBLAST_GRID_SIZE):
-                self.grid[r][c] = 0
-            cleared_count += 1
-        
-        # 열 제거
-        for c in cols_to_clear:
-            for r in range(BLOCKBLAST_GRID_SIZE):
-                self.grid[r][c] = 0
-            cleared_count += 1
-        
-        # 점수 추가
-        if cleared_count > 0:
-            self.score += cleared_count * 100
-            # 콤보 보너스
-            if cleared_count >= 2:
-                self.score += (cleared_count - 1) * 50
+
+        if rows_to_clear or cols_to_clear:
+            # 애니메이션 시작
+            self.clearing_rows = rows_to_clear
+            self.clearing_cols = cols_to_clear
+            self.clear_animation_timer = 30  # 애니메이션 프레임 수 (더 길게)
+
+            # 파티클 효과 추가
+            for r in rows_to_clear:
+                for c in range(BLOCKBLAST_GRID_SIZE):
+                    if self.grid[r][c] != 0:
+                        x = BLOCKBLAST_OFFSET_X + c * BLOCKBLAST_CELL_SIZE + BLOCKBLAST_CELL_SIZE // 2
+                        y = BLOCKBLAST_OFFSET_Y + r * BLOCKBLAST_CELL_SIZE + BLOCKBLAST_CELL_SIZE // 2
+                        PARTICLE_SYSTEM.add_explosion(x, y, self.grid[r][c], count=15)
+
+            for c in cols_to_clear:
+                for r in range(BLOCKBLAST_GRID_SIZE):
+                    if self.grid[r][c] != 0:
+                        x = BLOCKBLAST_OFFSET_X + c * BLOCKBLAST_CELL_SIZE + BLOCKBLAST_CELL_SIZE // 2
+                        y = BLOCKBLAST_OFFSET_Y + r * BLOCKBLAST_CELL_SIZE + BLOCKBLAST_CELL_SIZE // 2
+                        PARTICLE_SYSTEM.add_explosion(x, y, self.grid[r][c], count=15)
+
+            # 콤보 카운트
+            self.combo_count += 1
+            self.combo_display_timer = 120
+
+            # 화면 흔들림 효과 (콤보에 따라 강도 증가)
+            if self.combo_count > 1:
+                self.screen_shake_intensity = min(10, 3 + self.combo_count)
+                self.screen_shake_timer = 20
+
+            # 점수 계산
+            cleared_count = len(rows_to_clear) + len(cols_to_clear)
+            base_score = cleared_count * 100
+            combo_bonus = self.combo_count * 50 if self.combo_count > 1 else 0
+            multi_clear_bonus = (cleared_count - 1) * 50 if cleared_count > 1 else 0
+
+            total_score = base_score + combo_bonus + multi_clear_bonus
+            self.score += total_score
+
+            # 떠오르는 점수 텍스트
+            center_x = BLOCKBLAST_OFFSET_X + (BLOCKBLAST_GRID_SIZE * BLOCKBLAST_CELL_SIZE) // 2
+            center_y = BLOCKBLAST_OFFSET_Y + (BLOCKBLAST_GRID_SIZE * BLOCKBLAST_CELL_SIZE) // 2
+            FLOATING_TEXT_SYSTEM.add_text(center_x, center_y - 50, f"+{total_score}", COLORS['gold'], 'large')
+        else:
+            # 콤보 리셋
+            self.combo_count = 0
+
+    def update_animation(self):
+        """애니메이션 업데이트"""
+        # 배경 애니메이션 타이머
+        self.background_time += 1
+
+        # 화면 흔들림 업데이트
+        if self.screen_shake_timer > 0:
+            self.screen_shake_timer -= 1
+            if self.screen_shake_timer == 0:
+                self.screen_shake_intensity = 0
+
+        # 펄스 효과 업데이트
+        self.pulse_effects = [(x, y, t - 1) for x, y, t in self.pulse_effects if t > 0]
+
+        # 게임 오버 페이드 아웃
+        if self.game_over and self.game_over_fade < 200:
+            self.game_over_fade += 2
+
+        if self.clear_animation_timer > 0:
+            self.clear_animation_timer -= 1
+            if self.clear_animation_timer == 0:
+                # 애니메이션 끝나면 실제로 제거
+                for r in self.clearing_rows:
+                    for c in range(BLOCKBLAST_GRID_SIZE):
+                        self.grid[r][c] = 0
+
+                for c in self.clearing_cols:
+                    for r in range(BLOCKBLAST_GRID_SIZE):
+                        self.grid[r][c] = 0
+
+                self.clearing_rows = []
+                self.clearing_cols = []
+
+                # PERFECT 체크 (모든 블록이 제거되었는지 확인)
+                all_cleared = all(self.grid[r][c] == 0 for r in range(BLOCKBLAST_GRID_SIZE) for c in range(BLOCKBLAST_GRID_SIZE))
+                if all_cleared:
+                    self.perfect_display_timer = 180  # 3초 동안 표시
+                    perfect_bonus = 500
+                    self.score += perfect_bonus
+                    # 화면 중앙에 색종이 효과
+                    center_x = BLOCKBLAST_OFFSET_X + (BLOCKBLAST_GRID_SIZE * BLOCKBLAST_CELL_SIZE) // 2
+                    center_y = BLOCKBLAST_OFFSET_Y + (BLOCKBLAST_GRID_SIZE * BLOCKBLAST_CELL_SIZE) // 2
+                    PARTICLE_SYSTEM.add_confetti(center_x, center_y, count=50)
+                    # 떠오르는 텍스트
+                    FLOATING_TEXT_SYSTEM.add_text(center_x, center_y, "+500", COLORS['green'], 'huge')
+                    # 화면 흔들림
+                    self.screen_shake_intensity = 15
+                    self.screen_shake_timer = 30
+
+                # 줄 제거 후 게임오버 체크 (중요!)
+                if self.need_game_over_check:
+                    self.need_game_over_check = False
+                    if self.check_game_over():
+                        self.game_over = True
+                        self.leaderboard = LeaderboardManager.update(GAME_BLOCKBLAST, self.score, student_id=CURRENT_STUDENT_ID)
+
+        # 콤보 표시 타이머
+        if self.combo_display_timer > 0:
+            self.combo_display_timer -= 1
+
+        # PERFECT 표시 타이머
+        if self.perfect_display_timer > 0:
+            self.perfect_display_timer -= 1
+
+        # 신기록 표시 타이머
+        if self.record_display_timer > 0:
+            self.record_display_timer -= 1
     
     def check_game_over(self):
         """게임 오버 확인"""
@@ -2340,55 +3153,88 @@ class BlockBlast:
     
     def draw(self):
         """게임 화면 그리기"""
-        WINDOW.fill(COLORS['bg'])
-        
-        # 그리드 배경
+        # 화면 흔들림 오프셋 계산
+        shake_x = 0
+        shake_y = 0
+        if self.screen_shake_intensity > 0:
+            shake_x = random.randint(-self.screen_shake_intensity, self.screen_shake_intensity)
+            shake_y = random.randint(-self.screen_shake_intensity, self.screen_shake_intensity)
+
+        # 배경 그라데이션 애니메이션
+        # 시간에 따라 부드럽게 변하는 색상
+        bg_wave = math.sin(self.background_time * 0.02) * 0.5 + 0.5  # 0~1 사이 값
+        bg_r = int(235 + bg_wave * 10)
+        bg_g = int(240 + bg_wave * 10)
+        bg_b = int(245 + bg_wave * 10)
+        WINDOW.fill((bg_r, bg_g, bg_b))
+
+        # 그리드 배경 (화면 흔들림 적용)
         grid_rect = pygame.Rect(
-            BLOCKBLAST_OFFSET_X,
-            BLOCKBLAST_OFFSET_Y,
+            BLOCKBLAST_OFFSET_X + shake_x,
+            BLOCKBLAST_OFFSET_Y + shake_y,
             BLOCKBLAST_GRID_SIZE * BLOCKBLAST_CELL_SIZE,
             BLOCKBLAST_GRID_SIZE * BLOCKBLAST_CELL_SIZE
         )
-        pygame.draw.rect(WINDOW, (250, 248, 239), grid_rect)
+        pygame.draw.rect(WINDOW, (255, 255, 255), grid_rect)
         
-        # 그리드 선
+        # 그리드 선 (화면 흔들림 적용)
         for i in range(BLOCKBLAST_GRID_SIZE + 1):
             # 수평선
             pygame.draw.line(
-                WINDOW, (200, 200, 200),
-                (BLOCKBLAST_OFFSET_X, BLOCKBLAST_OFFSET_Y + i * BLOCKBLAST_CELL_SIZE),
-                (BLOCKBLAST_OFFSET_X + BLOCKBLAST_GRID_SIZE * BLOCKBLAST_CELL_SIZE,
-                 BLOCKBLAST_OFFSET_Y + i * BLOCKBLAST_CELL_SIZE),
+                WINDOW, BLOCKBLAST_GRID_COLOR,
+                (BLOCKBLAST_OFFSET_X + shake_x, BLOCKBLAST_OFFSET_Y + shake_y + i * BLOCKBLAST_CELL_SIZE),
+                (BLOCKBLAST_OFFSET_X + shake_x + BLOCKBLAST_GRID_SIZE * BLOCKBLAST_CELL_SIZE,
+                 BLOCKBLAST_OFFSET_Y + shake_y + i * BLOCKBLAST_CELL_SIZE),
                 2
             )
             # 수직선
             pygame.draw.line(
-                WINDOW, (200, 200, 200),
-                (BLOCKBLAST_OFFSET_X + i * BLOCKBLAST_CELL_SIZE, BLOCKBLAST_OFFSET_Y),
-                (BLOCKBLAST_OFFSET_X + i * BLOCKBLAST_CELL_SIZE,
-                 BLOCKBLAST_OFFSET_Y + BLOCKBLAST_GRID_SIZE * BLOCKBLAST_CELL_SIZE),
+                WINDOW, BLOCKBLAST_GRID_COLOR,
+                (BLOCKBLAST_OFFSET_X + shake_x + i * BLOCKBLAST_CELL_SIZE, BLOCKBLAST_OFFSET_Y + shake_y),
+                (BLOCKBLAST_OFFSET_X + shake_x + i * BLOCKBLAST_CELL_SIZE,
+                 BLOCKBLAST_OFFSET_Y + shake_y + BLOCKBLAST_GRID_SIZE * BLOCKBLAST_CELL_SIZE),
                 2
             )
         
-        # 배치된 블록들
+        # 펄스 효과 그리기 (블록보다 먼저)
+        for pulse_x, pulse_y, pulse_timer in self.pulse_effects:
+            radius = int((30 - pulse_timer) * 2)  # 펄스가 커지는 반지름
+            alpha = int(255 * (pulse_timer / 30))  # 점점 투명해짐
+            if radius > 0 and alpha > 0:
+                pulse_surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+                pygame.draw.circle(pulse_surf, (255, 215, 0, alpha), (radius, radius), radius, 3)
+                WINDOW.blit(pulse_surf, (int(pulse_x + shake_x - radius), int(pulse_y + shake_y - radius)))
+
+        # 배치된 블록들 (화면 흔들림 적용)
         for r in range(BLOCKBLAST_GRID_SIZE):
             for c in range(BLOCKBLAST_GRID_SIZE):
                 if self.grid[r][c] != 0:
+                    # 제거 애니메이션 중인 블록은 깜빡이는 효과
+                    is_clearing = (r in self.clearing_rows or c in self.clearing_cols)
+
                     rect = pygame.Rect(
-                        BLOCKBLAST_OFFSET_X + c * BLOCKBLAST_CELL_SIZE + 1,
-                        BLOCKBLAST_OFFSET_Y + r * BLOCKBLAST_CELL_SIZE + 1,
+                        BLOCKBLAST_OFFSET_X + shake_x + c * BLOCKBLAST_CELL_SIZE + 1,
+                        BLOCKBLAST_OFFSET_Y + shake_y + r * BLOCKBLAST_CELL_SIZE + 1,
                         BLOCKBLAST_CELL_SIZE - 2,
                         BLOCKBLAST_CELL_SIZE - 2
                     )
-                    pygame.draw.rect(WINDOW, self.grid[r][c], rect, border_radius=5)
-                    pygame.draw.rect(WINDOW, COLORS['white'], rect, 2, border_radius=5)
+
+                    if is_clearing and self.clear_animation_timer > 0:
+                        # 깜빡이는 효과 (사인파 사용)
+                        flash_intensity = int(128 + 127 * math.sin(self.clear_animation_timer * 0.5))
+                        flash_color = (255, 255, flash_intensity)
+                        pygame.draw.rect(WINDOW, flash_color, rect, border_radius=5)
+                        pygame.draw.rect(WINDOW, COLORS['gold'], rect, 3, border_radius=5)
+                    else:
+                        pygame.draw.rect(WINDOW, self.grid[r][c], rect, border_radius=5)
+                        pygame.draw.rect(WINDOW, COLORS['white'], rect, 2, border_radius=5)
         
-        # 배치 가능한 위치 하이라이트
+        # 배치 가능한 위치 하이라이트 (화면 흔들림 적용)
         if self.dragging and self.selected_piece_idx is not None:
             piece = self.available_pieces[self.selected_piece_idx]
             if piece:
                 grid_row, grid_col = self.screen_to_grid(self.mouse_x, self.mouse_y, piece)
-                
+
                 if self.can_place(piece, grid_row, grid_col):
                     # 배치 가능한 위치를 반투명 녹색으로 표시
                     for row_idx, row in enumerate(piece.shape):
@@ -2398,13 +3244,13 @@ class BlockBlast:
                                 c = grid_col + col_idx
                                 if 0 <= r < BLOCKBLAST_GRID_SIZE and 0 <= c < BLOCKBLAST_GRID_SIZE:
                                     rect = pygame.Rect(
-                                        BLOCKBLAST_OFFSET_X + c * BLOCKBLAST_CELL_SIZE + 1,
-                                        BLOCKBLAST_OFFSET_Y + r * BLOCKBLAST_CELL_SIZE + 1,
+                                        BLOCKBLAST_OFFSET_X + shake_x + c * BLOCKBLAST_CELL_SIZE + 1,
+                                        BLOCKBLAST_OFFSET_Y + shake_y + r * BLOCKBLAST_CELL_SIZE + 1,
                                         BLOCKBLAST_CELL_SIZE - 2,
                                         BLOCKBLAST_CELL_SIZE - 2
                                     )
                                     surf = pygame.Surface((BLOCKBLAST_CELL_SIZE - 2, BLOCKBLAST_CELL_SIZE - 2), pygame.SRCALPHA)
-                                    pygame.draw.rect(surf, (0, 255, 0, 100), (0, 0, BLOCKBLAST_CELL_SIZE - 2, BLOCKBLAST_CELL_SIZE - 2), border_radius=5)
+                                    pygame.draw.rect(surf, (0, 255, 0, 120), (0, 0, BLOCKBLAST_CELL_SIZE - 2, BLOCKBLAST_CELL_SIZE - 2), border_radius=5)
                                     WINDOW.blit(surf, rect)
         
         # 테두리
@@ -2412,22 +3258,35 @@ class BlockBlast:
         pygame.draw.line(WINDOW, COLORS['outline'], (GAME_WIDTH, 0), (GAME_WIDTH, HEIGHT), 3)
         
         # 사용 가능한 블록들 표시
-        piece_area_y = BLOCKBLAST_OFFSET_Y + BLOCKBLAST_GRID_SIZE * BLOCKBLAST_CELL_SIZE + 30
+        piece_area_y = BLOCKBLAST_OFFSET_Y + BLOCKBLAST_GRID_SIZE * BLOCKBLAST_CELL_SIZE + 20
         piece_spacing = GAME_WIDTH // 3
-        
+        piece_cell_size = 40  # 블록 표시 크기
+
+        # 호버 중인 블록 확인
+        self.hovered_piece_idx = None
+        mouse_pos = pygame.mouse.get_pos()
+
         for idx, piece in enumerate(self.available_pieces):
             if piece is None:
                 continue
-            
+
             # 블록을 드래그 중이 아닐 때만 표시
             if self.dragging and idx == self.selected_piece_idx:
                 continue
-            
+
             # 블록을 중앙에 배치
             piece_center_x = piece_spacing * idx + piece_spacing // 2
-            piece_x = piece_center_x - (piece.width * 50) // 2
+            piece_x = piece_center_x - (piece.width * piece_cell_size) // 2
             piece_y = piece_area_y
-            
+
+            # 호버 체크
+            is_hovered = False
+            if not self.dragging:
+                if (piece_x <= mouse_pos[0] <= piece_x + piece.width * piece_cell_size and
+                    piece_y <= mouse_pos[1] <= piece_y + piece.height * piece_cell_size):
+                    is_hovered = True
+                    self.hovered_piece_idx = idx
+
             # 배치 가능 여부 확인
             can_be_placed = False
             for r in range(BLOCKBLAST_GRID_SIZE):
@@ -2437,19 +3296,29 @@ class BlockBlast:
                         break
                 if can_be_placed:
                     break
-            
+
+            # 호버 시 확대 효과
+            display_size = piece_cell_size
+            display_x = piece_x
+            display_y = piece_y
+            if is_hovered:
+                display_size = int(piece_cell_size * 1.1)  # 10% 확대
+                # 중앙에서 확대되도록 위치 조정
+                display_x = piece_center_x - (piece.width * display_size) // 2
+                display_y = piece_y - (display_size - piece_cell_size) // 2
+
             # 배치 불가능하면 회색으로 표시
             alpha = 255 if can_be_placed else 100
-            piece.draw(piece_x, piece_y, 50, alpha)
-        
+            piece.draw(display_x, display_y, display_size, alpha)
+
         # 드래그 중인 블록 (마우스 중심에 표시)
         if self.dragging and self.selected_piece_idx is not None:
             piece = self.available_pieces[self.selected_piece_idx]
             if piece:
                 # 블록의 중심이 마우스 위치에 오도록
-                draw_x = self.mouse_x - (piece.width * 50) // 2
-                draw_y = self.mouse_y - (piece.height * 50) // 2
-                piece.draw(draw_x, draw_y, 50)
+                draw_x = self.mouse_x - (piece.width * piece_cell_size) // 2
+                draw_y = self.mouse_y - (piece.height * piece_cell_size) // 2
+                piece.draw(draw_x, draw_y, piece_cell_size)
         
         # 관리자 모드 표시
         if ADMIN_MODE:
@@ -2475,13 +3344,58 @@ class BlockBlast:
         y += len(controls) * 18 + 10
         UIDrawer.panel_separator(y)
         UIDrawer.leaderboard(self.leaderboard, y + 10)
-        
+
+        # 파티클 시스템 그리기
+        PARTICLE_SYSTEM.draw(WINDOW)
+
+        # 떠오르는 텍스트 그리기
+        FLOATING_TEXT_SYSTEM.draw(WINDOW)
+
+        # PERFECT 메시지
+        if self.perfect_display_timer > 0:
+            # 크기 애니메이션 (처음에 크게 나타났다가 작아짐)
+            scale = 1.0 + (self.perfect_display_timer / 180.0) * 0.5
+            perfect_text = "PERFECT!"
+            # 큰 폰트로 표시
+            text_surf = FONTS['huge'].render(perfect_text, True, COLORS['gold'])
+            text_surf = pygame.transform.scale(text_surf,
+                (int(text_surf.get_width() * scale), int(text_surf.get_height() * scale)))
+            text_rect = text_surf.get_rect(center=(GAME_WIDTH // 2, 150))
+            # 그림자 효과
+            shadow_surf = FONTS['huge'].render(perfect_text, True, COLORS['black'])
+            shadow_surf = pygame.transform.scale(shadow_surf,
+                (int(shadow_surf.get_width() * scale), int(shadow_surf.get_height() * scale)))
+            WINDOW.blit(shadow_surf, (text_rect.x + 3, text_rect.y + 3))
+            WINDOW.blit(text_surf, text_rect)
+            # 보너스 점수 표시
+            bonus_text = "+500"
+            bonus_surf = FONTS['medium'].render(bonus_text, True, COLORS['green'])
+            WINDOW.blit(bonus_surf, (text_rect.centerx - bonus_surf.get_width() // 2, text_rect.bottom + 10))
+
+        # 콤보 메시지
+        if self.combo_display_timer > 0 and self.combo_count > 1:
+            combo_text = f"COMBO x{self.combo_count}!"
+            combo_surf = FONTS['large'].render(combo_text, True, COLORS['orange'])
+            combo_rect = combo_surf.get_rect(center=(GAME_WIDTH // 2, 220))
+            # 그림자
+            shadow_surf = FONTS['large'].render(combo_text, True, COLORS['black'])
+            WINDOW.blit(shadow_surf, (combo_rect.x + 2, combo_rect.y + 2))
+            WINDOW.blit(combo_surf, combo_rect)
+
+
+        # 게임 오버 페이드 아웃 효과
+        if self.game_over and self.game_over_fade > 0:
+            fade_surf = pygame.Surface((WIDTH, HEIGHT))
+            fade_surf.set_alpha(min(150, self.game_over_fade))
+            fade_surf.fill((0, 0, 0))
+            WINDOW.blit(fade_surf, (0, 0))
+
         # 오버레이
         if self.entering_pw:
             UIDrawer.password_overlay(self.pw_input)
         elif self.game_over:
             UIDrawer.game_over_screen()
-        
+
         pygame.display.update()
     
     def handle_event(self, event):
@@ -2510,21 +3424,22 @@ class BlockBlast:
         elif event.type == pygame.MOUSEBUTTONDOWN and not self.game_over and not self.entering_pw:
             if event.button == 1:  # 좌클릭
                 # 사용 가능한 블록 클릭 확인
-                piece_area_y = BLOCKBLAST_OFFSET_Y + BLOCKBLAST_GRID_SIZE * BLOCKBLAST_CELL_SIZE + 30
+                piece_area_y = BLOCKBLAST_OFFSET_Y + BLOCKBLAST_GRID_SIZE * BLOCKBLAST_CELL_SIZE + 20
                 piece_spacing = GAME_WIDTH // 3
-                
+                piece_cell_size = 40
+
                 for idx, piece in enumerate(self.available_pieces):
                     if piece is None:
                         continue
-                    
+
                     # 블록을 중앙에 배치
                     piece_center_x = piece_spacing * idx + piece_spacing // 2
-                    piece_x = piece_center_x - (piece.width * 50) // 2
+                    piece_x = piece_center_x - (piece.width * piece_cell_size) // 2
                     piece_y = piece_area_y
-                    
+
                     # 블록 영역 클릭 확인
-                    if (piece_x <= event.pos[0] <= piece_x + piece.width * 50 and
-                        piece_y <= event.pos[1] <= piece_y + piece.height * 50):
+                    if (piece_x <= event.pos[0] <= piece_x + piece.width * piece_cell_size and
+                        piece_y <= event.pos[1] <= piece_y + piece.height * piece_cell_size):
                         self.selected_piece_idx = idx
                         self.dragging = True
                         self.mouse_x, self.mouse_y = event.pos
@@ -2544,17 +3459,37 @@ class BlockBlast:
                             # 블록 배치
                             self.place_piece(piece, grid_row, grid_col)
                             self.score += 10  # 배치 점수
+
+                            # 펄스 효과 추가 (배치된 블록의 중심)
+                            for row_idx, row in enumerate(piece.shape):
+                                for col_idx, cell in enumerate(row):
+                                    if cell:
+                                        r = grid_row + row_idx
+                                        c = grid_col + col_idx
+                                        pulse_x = BLOCKBLAST_OFFSET_X + c * BLOCKBLAST_CELL_SIZE + BLOCKBLAST_CELL_SIZE // 2
+                                        pulse_y = BLOCKBLAST_OFFSET_Y + r * BLOCKBLAST_CELL_SIZE + BLOCKBLAST_CELL_SIZE // 2
+                                        self.pulse_effects.append((pulse_x, pulse_y, 30))
+
+                            # 떠오르는 텍스트
+                            center_x = BLOCKBLAST_OFFSET_X + grid_col * BLOCKBLAST_CELL_SIZE + (piece.width * BLOCKBLAST_CELL_SIZE) // 2
+                            center_y = BLOCKBLAST_OFFSET_Y + grid_row * BLOCKBLAST_CELL_SIZE + (piece.height * BLOCKBLAST_CELL_SIZE) // 2
+                            FLOATING_TEXT_SYSTEM.add_text(center_x, center_y, "+10", COLORS['blue'], 'small')
+
                             self.available_pieces[self.selected_piece_idx] = None
-                            
+
                             # 모든 블록을 사용했으면 새로 생성
                             if all(p is None for p in self.available_pieces):
                                 self.available_pieces = [self.new_piece() for _ in range(3)]
-                                self.score += 50  # 보너스 점수
-                            
-                            # 게임 오버 확인
-                            if self.check_game_over():
-                                self.game_over = True
-                                self.leaderboard = LeaderboardManager.update(GAME_BLOCKBLAST, self.score)
+
+                            # 게임 오버 확인 플래그 설정 (애니메이션 후 체크)
+                            # 줄 제거 애니메이션이 있으면 나중에 체크, 없으면 즉시 체크
+                            if self.clear_animation_timer > 0:
+                                self.need_game_over_check = True
+                            else:
+                                # 줄 제거가 없었으면 즉시 게임오버 체크
+                                if self.check_game_over():
+                                    self.game_over = True
+                                    self.leaderboard = LeaderboardManager.update(GAME_BLOCKBLAST, self.score, student_id=CURRENT_STUDENT_ID)
                 
                 self.dragging = False
                 self.selected_piece_idx = None
@@ -2565,17 +3500,32 @@ def run_blockblast():
     """블록블라스트 게임 실행"""
     game = BlockBlast()
     clock = pygame.time.Clock()
-    
+
     while True:
         clock.tick(FPS)
-        
+
+        # 게임 오버 후 5초 자동 메뉴 복귀
+        if game.game_over:
+            game.game_over_timer += 1
+            if game.game_over_timer >= 300:  # 5초 (60 FPS * 5)
+                PARTICLE_SYSTEM.clear()  # 파티클 초기화
+                FLOATING_TEXT_SYSTEM.clear()  # 떠오르는 텍스트 초기화
+                return MENU
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return None
             result = game.handle_event(event)
             if result != GAME_BLOCKBLAST:
+                PARTICLE_SYSTEM.clear()  # 파티클 초기화
+                FLOATING_TEXT_SYSTEM.clear()  # 떠오르는 텍스트 초기화
                 return result
-        
+
+        # 애니메이션 업데이트
+        game.update_animation()
+        PARTICLE_SYSTEM.update()
+        FLOATING_TEXT_SYSTEM.update()
+
         game.draw()
 
 # ==================== 메인 ====================
