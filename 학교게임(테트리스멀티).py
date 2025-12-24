@@ -2224,9 +2224,9 @@ TETRIO_ATTACK_TABLE = {
 
 class NetworkManager:
     """네트워크 통신 관리 클래스 (4인용 서버-클라이언트)"""
-    def __init__(self, is_server=True, host='localhost', port=5555):
+    def __init__(self, is_server=True, host='0.0.0.0', port=5555):
         self.is_server = is_server
-        self.host = host
+        self.host = host if not is_server else '0.0.0.0'  # 서버는 모든 인터페이스에서 수신
         self.port = port
         self.socket = None
         self.clients = []  # 서버: 연결된 클라이언트들
@@ -2247,7 +2247,8 @@ class NetworkManager:
             self.connected = True
             self.player_id = 0  # 서버는 플레이어 0
             return True
-        except:
+        except Exception as e:
+            print(f"서버 시작 실패: {e}")
             return False
 
     def accept_connection(self):
@@ -2290,7 +2291,14 @@ class NetworkManager:
 
             threading.Thread(target=self._receive_loop_server, daemon=True).start()
             return True
-        except:
+        except socket.timeout:
+            print(f"서버 연결 시간 초과: {self.host}:{self.port}")
+            return False
+        except ConnectionRefusedError:
+            print(f"서버 연결 거부됨: {self.host}:{self.port} (서버가 실행 중인지 확인하세요)")
+            return False
+        except Exception as e:
+            print(f"서버 연결 실패: {e}")
             return False
 
     def _receive_loop_server(self):
