@@ -1579,6 +1579,13 @@ class Tetris:
         self.initial_delay = 170  # 초기 지연 (밀리초)
         self.repeat_rate = 50  # 반복 속도 (밀리초)
 
+        # 착지 지연 (Lock Delay)
+        self.lock_delay_time = 0  # 현재 착지 지연 시간
+        self.lock_delay_max = 500  # 최대 착지 지연 시간 (0.5초)
+        self.is_on_ground = False  # 블록이 바닥에 닿았는지 여부
+        self.lock_delay_moves = 0  # 착지 지연 중 이동 횟수
+        self.lock_delay_max_moves = 15  # 최대 이동 가능 횟수
+
     def _refill_bag(self):
         """7개 블록을 섞어서 bag에 추가"""
         pieces = list(TETRIS_SHAPES.keys())  # ['I', 'O', 'T', 'S', 'Z', 'J', 'L']
@@ -1720,13 +1727,17 @@ class Tetris:
         if self.valid_position(offset_x=dx, offset_y=dy):
             self.current_block.x += dx
             self.current_block.y += dy
+            # 좌우 이동 시 착지 지연 리셋 (이동 횟수 제한 적용)
+            if dx != 0 and self.is_on_ground and self.lock_delay_moves < self.lock_delay_max_moves:
+                self.lock_delay_time = 0
+                self.lock_delay_moves += 1
             return True
         return False
     
     def rotate_block(self, clockwise=True):
         """블록 회전 (시계방향 또는 반시계방향)"""
         original_shape = [row[:] for row in self.current_block.shape]
-        
+
         if clockwise:
             # 시계방향: 90도
             self.current_block.rotate()
@@ -1734,16 +1745,25 @@ class Tetris:
             # 반시계방향: 270도 (시계방향 3번)
             for _ in range(3):
                 self.current_block.rotate()
-        
+
         # 회전 후 위치가 유효하지 않으면 원래대로
         if not self.valid_position():
             # 벽 킥 시도 (좌우로 1칸씩)
             for offset in [1, -1, 2, -2]:
                 if self.valid_position(offset_x=offset):
                     self.current_block.x += offset
+                    # 회전 성공 시 착지 지연 리셋
+                    if self.is_on_ground and self.lock_delay_moves < self.lock_delay_max_moves:
+                        self.lock_delay_time = 0
+                        self.lock_delay_moves += 1
                     return
             # 벽 킥 실패시 원래 모양으로
             self.current_block.shape = original_shape
+        else:
+            # 회전 성공 시 착지 지연 리셋
+            if self.is_on_ground and self.lock_delay_moves < self.lock_delay_max_moves:
+                self.lock_delay_time = 0
+                self.lock_delay_moves += 1
     
     def rotate_180(self):
         """180도 회전"""
@@ -1830,12 +1850,35 @@ class Tetris:
             # 멀티플레이는 고정 속도
             current_fall_speed = 500
         
-        # 자동 낙하
-        self.fall_time += dt
-        if self.fall_time >= current_fall_speed:
-            self.fall_time = 0
-            if not self.move(0, 1):
+        # 블록이 바닥에 닿았는지 확인
+        if not self.valid_position(offset_y=1):
+            # 바닥에 닿음
+            if not self.is_on_ground:
+                # 처음 바닥에 닿았을 때 초기화
+                self.is_on_ground = True
+                self.lock_delay_time = 0
+                self.lock_delay_moves = 0
+
+            # 착지 지연 타이머 증가
+            self.lock_delay_time += dt
+
+            # 착지 지연 시간이 최대치에 도달하거나 이동 횟수 초과시 블록 고정
+            if self.lock_delay_time >= self.lock_delay_max or self.lock_delay_moves >= self.lock_delay_max_moves:
                 self.lock_block()
+                self.is_on_ground = False
+                self.lock_delay_time = 0
+                self.lock_delay_moves = 0
+        else:
+            # 바닥에서 떨어짐 (이동 후)
+            self.is_on_ground = False
+            self.lock_delay_time = 0
+            self.lock_delay_moves = 0
+
+            # 자동 낙하
+            self.fall_time += dt
+            if self.fall_time >= current_fall_speed:
+                self.fall_time = 0
+                self.move(0, 1)
         
         # 키 반복 입력 처리
         keys = pygame.key.get_pressed()
@@ -2236,8 +2279,47 @@ class NetworkManager:
         self.lock = threading.Lock()
         self.player_id = 0  # 내 플레이어 ID (0-3)
         self.last_heartbeat = pygame.time.get_ticks()  # 마지막 하트비트 시간
-        self.heartbeat_interval = 2000  # 하트비트 간격 (2초)
+        self.heartbeat_interval = 1000  # 하트비트 간격 (1초로 단축)
         self.client_heartbeats = {}  # 클라이언트별 마지막 하트비트 시간
+
+    def _send_data_with_length(self, conn, data):
+        """데이터 크기를 먼저 전송한 후 데이터 전송"""
+        try:
+            pickled = pickle.dumps(data)
+            length = len(pickled)
+            # 4바이트로 길이 전송
+            conn.sendall(length.to_bytes(4, byteorder='big'))
+            # 실제 데이터 전송
+            conn.sendall(pickled)
+            return True
+        except Exception as e:
+            print(f"데이터 전송 실패: {e}")
+            return False
+
+    def _recv_data_with_length(self, conn):
+        """데이터 크기를 먼저 받은 후 완전한 데이터 수신"""
+        try:
+            # 4바이트 길이 정보 수신
+            length_bytes = b''
+            while len(length_bytes) < 4:
+                chunk = conn.recv(4 - len(length_bytes))
+                if not chunk:
+                    return None
+                length_bytes += chunk
+
+            length = int.from_bytes(length_bytes, byteorder='big')
+
+            # 전체 데이터 수신
+            data = b''
+            while len(data) < length:
+                chunk = conn.recv(min(65536, length - len(data)))
+                if not chunk:
+                    return None
+                data += chunk
+
+            return pickle.loads(data)
+        except Exception as e:
+            raise e
 
     def start_server(self):
         """서버 시작 (최대 3명의 클라이언트)"""
@@ -2245,6 +2327,9 @@ class NetworkManager:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)  # TCP Keep-Alive
+            self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # Nagle 알고리즘 비활성화 (지연 감소)
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 131072)  # 송신 버퍼 128KB
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 131072)  # 수신 버퍼 128KB
             self.socket.bind((self.host, self.port))
             self.socket.listen(3)  # 최대 3명
             self.socket.settimeout(0.5)  # 타임아웃 증가 (0.1초 -> 0.5초)
@@ -2263,13 +2348,16 @@ class NetworkManager:
         try:
             conn, addr = self.socket.accept()
             conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)  # TCP Keep-Alive
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # Nagle 알고리즘 비활성화
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 131072)  # 송신 버퍼 128KB
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 131072)  # 수신 버퍼 128KB
             conn.settimeout(0.5)  # 타임아웃 증가
             player_id = len(self.clients) + 1
             self.clients.append({'conn': conn, 'id': player_id, 'addr': addr})
             self.client_heartbeats[player_id] = pygame.time.get_ticks()
 
             # 플레이어 ID 전송
-            conn.sendall(pickle.dumps({'type': 'player_id', 'id': player_id}))
+            self._send_data_with_length(conn, {'type': 'player_id', 'id': player_id})
 
             # 수신 스레드 시작
             threading.Thread(target=self._receive_loop_client, args=(conn, player_id), daemon=True).start()
@@ -2284,6 +2372,9 @@ class NetworkManager:
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)  # TCP Keep-Alive
+            self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # Nagle 알고리즘 비활성화
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 131072)  # 송신 버퍼 128KB
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 131072)  # 수신 버퍼 128KB
             self.socket.settimeout(5)
             self.socket.connect((self.host, self.port))
             self.socket.settimeout(0.5)  # 타임아웃 증가
@@ -2291,9 +2382,8 @@ class NetworkManager:
             self.connected = True
 
             # 플레이어 ID 수신
-            data = self.connection.recv(4096)
-            msg = pickle.loads(data)
-            if msg['type'] == 'player_id':
+            msg = self._recv_data_with_length(self.connection)
+            if msg and msg['type'] == 'player_id':
                 self.player_id = msg['id']
 
             threading.Thread(target=self._receive_loop_server, daemon=True).start()
@@ -2312,15 +2402,14 @@ class NetworkManager:
         """서버로부터 데이터 수신 (클라이언트용)"""
         while self.connected:
             try:
-                data = self.connection.recv(8192)
-                if data:
-                    msg = pickle.loads(data)
+                msg = self._recv_data_with_length(self.connection)
+                if msg:
                     # 하트비트 응답 처리
                     if isinstance(msg, dict) and msg.get('type') == 'heartbeat':
                         continue
                     with self.lock:
                         self.received_data = msg
-                elif data == b'':
+                else:
                     # 연결 끊김
                     print("서버 연결 끊김 감지")
                     self.connected = False
@@ -2336,9 +2425,8 @@ class NetworkManager:
         """클라이언트로부터 데이터 수신 (서버용)"""
         while self.connected:
             try:
-                data = conn.recv(4096)
-                if data:
-                    msg = pickle.loads(data)
+                msg = self._recv_data_with_length(conn)
+                if msg:
                     # 하트비트 응답 처리
                     if isinstance(msg, dict) and msg.get('type') == 'heartbeat':
                         self.client_heartbeats[player_id] = pygame.time.get_ticks()
@@ -2347,7 +2435,7 @@ class NetworkManager:
                     with self.lock:
                         self.received_data.append(msg)
                     self.client_heartbeats[player_id] = pygame.time.get_ticks()
-                elif data == b'':
+                else:
                     # 연결 끊김
                     print(f"플레이어 {player_id} 연결 끊김 감지")
                     with self.lock:
@@ -2375,11 +2463,8 @@ class NetworkManager:
                 heartbeat_msg = {'type': 'heartbeat'}
                 if self.is_server:
                     # 서버: 모든 클라이언트에게 하트비트 전송
-                    pickled = pickle.dumps(heartbeat_msg)
                     for client in self.clients[:]:
-                        try:
-                            client['conn'].sendall(pickled)
-                        except:
+                        if not self._send_data_with_length(client['conn'], heartbeat_msg):
                             # 전송 실패 시 클라이언트 제거
                             print(f"플레이어 {client['id']} 하트비트 전송 실패")
                             with self.lock:
@@ -2388,18 +2473,19 @@ class NetworkManager:
                                     del self.client_heartbeats[client['id']]
                 else:
                     # 클라이언트: 서버로 하트비트 전송
-                    self.connection.sendall(pickle.dumps(heartbeat_msg))
+                    if not self._send_data_with_length(self.connection, heartbeat_msg):
+                        self.connected = False
             except Exception as e:
                 print(f"하트비트 전송 실패: {e}")
                 self.connected = False
 
     def check_connection_timeout(self):
-        """연결 타임아웃 확인 (10초)"""
+        """연결 타임아웃 확인 (5초)"""
         if not self.is_server:
             return
 
         current_time = pygame.time.get_ticks()
-        timeout_threshold = 10000  # 10초
+        timeout_threshold = 5000  # 5초로 단축
 
         disconnected_clients = []
         for client in self.clients[:]:
@@ -2426,17 +2512,15 @@ class NetworkManager:
 
             if self.is_server:
                 # 서버: 모든 클라이언트에게 브로드캐스트
-                pickled = pickle.dumps(data)
                 for client in self.clients[:]:
-                    try:
-                        client['conn'].sendall(pickled)
-                    except Exception as e:
-                        print(f"플레이어 {client['id']} 전송 실패: {e}")
+                    if not self._send_data_with_length(client['conn'], data):
+                        print(f"플레이어 {client['id']} 전송 실패")
                         # 전송 실패 시 연결 끊김으로 처리하지 않음 (하트비트에서 처리)
-                        pass
             else:
                 # 클라이언트: 서버로 전송
-                self.connection.sendall(pickle.dumps(data))
+                if not self._send_data_with_length(self.connection, data):
+                    self.connected = False
+                    return False
             return True
         except Exception as e:
             print(f"데이터 전송 실패: {e}")
