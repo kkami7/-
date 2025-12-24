@@ -2235,15 +2235,19 @@ class NetworkManager:
         self.received_data = []  # 여러 클라이언트의 데이터
         self.lock = threading.Lock()
         self.player_id = 0  # 내 플레이어 ID (0-3)
+        self.last_heartbeat = pygame.time.get_ticks()  # 마지막 하트비트 시간
+        self.heartbeat_interval = 2000  # 하트비트 간격 (2초)
+        self.client_heartbeats = {}  # 클라이언트별 마지막 하트비트 시간
 
     def start_server(self):
         """서버 시작 (최대 3명의 클라이언트)"""
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)  # TCP Keep-Alive
             self.socket.bind((self.host, self.port))
             self.socket.listen(3)  # 최대 3명
-            self.socket.settimeout(0.1)
+            self.socket.settimeout(0.5)  # 타임아웃 증가 (0.1초 -> 0.5초)
             self.connected = True
             self.player_id = 0  # 서버는 플레이어 0
             return True
@@ -2258,9 +2262,11 @@ class NetworkManager:
 
         try:
             conn, addr = self.socket.accept()
-            conn.settimeout(0.1)
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)  # TCP Keep-Alive
+            conn.settimeout(0.5)  # 타임아웃 증가
             player_id = len(self.clients) + 1
             self.clients.append({'conn': conn, 'id': player_id, 'addr': addr})
+            self.client_heartbeats[player_id] = pygame.time.get_ticks()
 
             # 플레이어 ID 전송
             conn.sendall(pickle.dumps({'type': 'player_id', 'id': player_id}))
@@ -2277,9 +2283,10 @@ class NetworkManager:
         """서버에 연결"""
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)  # TCP Keep-Alive
             self.socket.settimeout(5)
             self.socket.connect((self.host, self.port))
-            self.socket.settimeout(0.1)
+            self.socket.settimeout(0.5)  # 타임아웃 증가
             self.connection = self.socket
             self.connected = True
 
@@ -2307,11 +2314,21 @@ class NetworkManager:
             try:
                 data = self.connection.recv(8192)
                 if data:
+                    msg = pickle.loads(data)
+                    # 하트비트 응답 처리
+                    if isinstance(msg, dict) and msg.get('type') == 'heartbeat':
+                        continue
                     with self.lock:
-                        self.received_data = pickle.loads(data)
+                        self.received_data = msg
+                elif data == b'':
+                    # 연결 끊김
+                    print("서버 연결 끊김 감지")
+                    self.connected = False
+                    break
             except socket.timeout:
                 continue
-            except:
+            except Exception as e:
+                print(f"클라이언트 수신 에러: {e}")
                 self.connected = False
                 break
 
@@ -2322,16 +2339,82 @@ class NetworkManager:
                 data = conn.recv(4096)
                 if data:
                     msg = pickle.loads(data)
+                    # 하트비트 응답 처리
+                    if isinstance(msg, dict) and msg.get('type') == 'heartbeat':
+                        self.client_heartbeats[player_id] = pygame.time.get_ticks()
+                        continue
                     msg['player_id'] = player_id
                     with self.lock:
                         self.received_data.append(msg)
+                    self.client_heartbeats[player_id] = pygame.time.get_ticks()
+                elif data == b'':
+                    # 연결 끊김
+                    print(f"플레이어 {player_id} 연결 끊김 감지")
+                    with self.lock:
+                        self.clients = [c for c in self.clients if c['id'] != player_id]
+                        if player_id in self.client_heartbeats:
+                            del self.client_heartbeats[player_id]
+                    break
             except socket.timeout:
                 continue
-            except:
+            except Exception as e:
+                print(f"플레이어 {player_id} 수신 에러: {e}")
                 # 클라이언트 연결 끊김
                 with self.lock:
                     self.clients = [c for c in self.clients if c['id'] != player_id]
+                    if player_id in self.client_heartbeats:
+                        del self.client_heartbeats[player_id]
                 break
+
+    def send_heartbeat(self):
+        """하트비트 전송 (연결 확인용)"""
+        current_time = pygame.time.get_ticks()
+        if current_time - self.last_heartbeat >= self.heartbeat_interval:
+            self.last_heartbeat = current_time
+            try:
+                heartbeat_msg = {'type': 'heartbeat'}
+                if self.is_server:
+                    # 서버: 모든 클라이언트에게 하트비트 전송
+                    pickled = pickle.dumps(heartbeat_msg)
+                    for client in self.clients[:]:
+                        try:
+                            client['conn'].sendall(pickled)
+                        except:
+                            # 전송 실패 시 클라이언트 제거
+                            print(f"플레이어 {client['id']} 하트비트 전송 실패")
+                            with self.lock:
+                                self.clients = [c for c in self.clients if c['id'] != client['id']]
+                                if client['id'] in self.client_heartbeats:
+                                    del self.client_heartbeats[client['id']]
+                else:
+                    # 클라이언트: 서버로 하트비트 전송
+                    self.connection.sendall(pickle.dumps(heartbeat_msg))
+            except Exception as e:
+                print(f"하트비트 전송 실패: {e}")
+                self.connected = False
+
+    def check_connection_timeout(self):
+        """연결 타임아웃 확인 (10초)"""
+        if not self.is_server:
+            return
+
+        current_time = pygame.time.get_ticks()
+        timeout_threshold = 10000  # 10초
+
+        disconnected_clients = []
+        for client in self.clients[:]:
+            player_id = client['id']
+            last_hb = self.client_heartbeats.get(player_id, 0)
+            if current_time - last_hb > timeout_threshold:
+                print(f"플레이어 {player_id} 타임아웃")
+                disconnected_clients.append(player_id)
+
+        if disconnected_clients:
+            with self.lock:
+                for player_id in disconnected_clients:
+                    self.clients = [c for c in self.clients if c['id'] != player_id]
+                    if player_id in self.client_heartbeats:
+                        del self.client_heartbeats[player_id]
 
     def send_data(self, data):
         """데이터 전송"""
@@ -2344,16 +2427,19 @@ class NetworkManager:
             if self.is_server:
                 # 서버: 모든 클라이언트에게 브로드캐스트
                 pickled = pickle.dumps(data)
-                for client in self.clients:
+                for client in self.clients[:]:
                     try:
                         client['conn'].sendall(pickled)
-                    except:
+                    except Exception as e:
+                        print(f"플레이어 {client['id']} 전송 실패: {e}")
+                        # 전송 실패 시 연결 끊김으로 처리하지 않음 (하트비트에서 처리)
                         pass
             else:
                 # 클라이언트: 서버로 전송
                 self.connection.sendall(pickle.dumps(data))
             return True
-        except:
+        except Exception as e:
+            print(f"데이터 전송 실패: {e}")
             self.connected = False
             return False
 
@@ -2459,6 +2545,12 @@ class MultiPlayerTetris:
         """게임 업데이트"""
         if self.game_over:
             return
+
+        # 하트비트 전송
+        self.network.send_heartbeat()
+
+        # 연결 타임아웃 확인 (서버만)
+        self.network.check_connection_timeout()
 
         my_game = self.games[self.my_id]
 
