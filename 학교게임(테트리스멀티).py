@@ -7,8 +7,55 @@ import math
 import socket
 import threading
 import pickle
+from datetime import datetime
 
 pygame.init()
+
+# ==================== 디버그 로그 시스템 ====================
+DEBUG_MODE = True  # False로 바꾸면 로그 비활성화
+
+def debug_log(category, message, data=None):
+    """디버그 로그 출력"""
+    if not DEBUG_MODE:
+        return
+    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    prefix = {
+        'NET_SEND': '📤 [송신]',
+        'NET_RECV': '📥 [수신]',
+        'NET_CONN': '🔗 [연결]',
+        'NET_ERR': '❌ [에러]',
+        'GAME': '🎮 [게임]',
+        'PLAYER': '👤 [플레이어]',
+        'GRID': '🧱 [그리드]',
+        'ATTACK': '⚔️ [공격]',
+    }.get(category, f'[{category}]')
+
+    log_msg = f"{timestamp} {prefix} {message}"
+    if data is not None:
+        if isinstance(data, dict):
+            # 간략화된 데이터 출력
+            summary = {}
+            for k, v in data.items():
+                if k == 'grid':
+                    # 그리드는 비어있지 않은 셀 수만 표시
+                    non_empty = sum(1 for row in v for cell in row if cell != 0)
+                    summary['grid'] = f"비어있지않은셀={non_empty}"
+                elif k == 'states':
+                    # states는 키만 표시
+                    summary['states'] = f"players={list(v.keys())}"
+                elif k == 'current_block':
+                    if v:
+                        summary['block'] = f"x={v.get('x')},y={v.get('y')}"
+                    else:
+                        summary['block'] = None
+                elif k in ['player_alive', 'player_rank', 'pending_garbage']:
+                    summary[k] = v
+                elif k not in ['shape', 'color']:
+                    summary[k] = v
+            log_msg += f" | {summary}"
+        else:
+            log_msg += f" | {data}"
+    print(log_msg)
 
 # ==================== 전역 설정 ====================
 FPS = 60
@@ -601,6 +648,41 @@ def init_fonts():
 FONTS = init_fonts()
 WINDOW = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("게임모음집")
+
+# ==================== 이미지 로드 ====================
+def load_typing_images():
+    """타이핑 게임용 이미지 로드"""
+    images = {}
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # 컵케이크 이미지 (기본 공격)
+    cupcake_path = os.path.join(script_dir, "컵케이크.png")
+    if os.path.exists(cupcake_path):
+        try:
+            img = pygame.image.load(cupcake_path).convert_alpha()
+            images['cupcake'] = pygame.transform.scale(img, (24, 24))
+        except:
+            images['cupcake'] = None
+    else:
+        images['cupcake'] = None
+
+    # 케이크 이미지 (강력 공격)
+    cake_path = os.path.join(script_dir, "케이크.png")
+    if os.path.exists(cake_path):
+        try:
+            img = pygame.image.load(cake_path).convert_alpha()
+            images['cake'] = pygame.transform.scale(img, (32, 32))
+            images['cake_item'] = pygame.transform.scale(img, (40, 40))  # 아이템용 큰 이미지
+        except:
+            images['cake'] = None
+            images['cake_item'] = None
+    else:
+        images['cake'] = None
+        images['cake_item'] = None
+
+    return images
+
+TYPING_IMAGES = load_typing_images()
 
 # ==================== 리더보드 관리 ====================
 class LeaderboardManager:
@@ -1576,6 +1658,11 @@ class Tetris:
             'right': False,
             'down': False
         }
+        self.key_repeat_count = {
+            'left': 0,
+            'right': 0,
+            'down': 0
+        }
         self.initial_delay = 170  # 초기 지연 (밀리초)
         self.repeat_rate = 50  # 반복 속도 (밀리초)
 
@@ -1646,7 +1733,7 @@ class Tetris:
                 if cell:
                     grid_y = self.current_block.y + y
                     grid_x = self.current_block.x + x
-                    if 0 <= grid_y < TETRIS_GRID_HEIGHT:
+                    if 0 <= grid_y < TETRIS_GRID_HEIGHT and 0 <= grid_x < TETRIS_GRID_WIDTH:
                         self.grid[grid_y][grid_x] = self.current_block.color
         
         # 줄 제거 확인
@@ -1698,6 +1785,11 @@ class Tetris:
             'down': False
         }
         self.key_timers = {
+            'left': 0,
+            'right': 0,
+            'down': 0
+        }
+        self.key_repeat_count = {
             'left': 0,
             'right': 0,
             'down': 0
@@ -1810,6 +1902,11 @@ class Tetris:
             'right': 0,
             'down': 0
         }
+        self.key_repeat_count = {
+            'left': 0,
+            'right': 0,
+            'down': 0
+        }
 
         # 위치 초기화
         if not self.valid_position():
@@ -1889,46 +1986,61 @@ class Tetris:
                 self.move(-1, 0)
                 self.key_pressed['left'] = True
                 self.key_timers['left'] = 0
+                self.key_repeat_count['left'] = 0
             else:
                 self.key_timers['left'] += dt
                 if self.key_timers['left'] >= self.initial_delay:
-                    # 초기 지연 후 반복
-                    if (self.key_timers['left'] - self.initial_delay) % self.repeat_rate < dt:
+                    # 초기 지연 후 반복 횟수 계산
+                    elapsed = self.key_timers['left'] - self.initial_delay
+                    expected_repeats = int(elapsed / self.repeat_rate)
+                    if expected_repeats > self.key_repeat_count.get('left', 0):
                         self.move(-1, 0)
+                        self.key_repeat_count['left'] = expected_repeats
         else:
             self.key_pressed['left'] = False
             self.key_timers['left'] = 0
-        
+            self.key_repeat_count['left'] = 0
+
         if keys[pygame.K_RIGHT] or keys[pygame.K_KP6]:
             if not self.key_pressed['right']:
                 self.move(1, 0)
                 self.key_pressed['right'] = True
                 self.key_timers['right'] = 0
+                self.key_repeat_count['right'] = 0
             else:
                 self.key_timers['right'] += dt
                 if self.key_timers['right'] >= self.initial_delay:
-                    # 초기 지연 후 반복
-                    if (self.key_timers['right'] - self.initial_delay) % self.repeat_rate < dt:
+                    # 초기 지연 후 반복 횟수 계산
+                    elapsed = self.key_timers['right'] - self.initial_delay
+                    expected_repeats = int(elapsed / self.repeat_rate)
+                    if expected_repeats > self.key_repeat_count.get('right', 0):
                         self.move(1, 0)
+                        self.key_repeat_count['right'] = expected_repeats
         else:
             self.key_pressed['right'] = False
             self.key_timers['right'] = 0
-        
+            self.key_repeat_count['right'] = 0
+
         # 소프트 드롭
         if keys[pygame.K_DOWN] or keys[pygame.K_KP2]:
             if not self.key_pressed['down']:
                 self.soft_drop()
                 self.key_pressed['down'] = True
                 self.key_timers['down'] = 0
+                self.key_repeat_count['down'] = 0
             else:
                 self.key_timers['down'] += dt
                 if self.key_timers['down'] >= 50:  # 소프트 드롭은 더 빠르게
-                    if (self.key_timers['down'] - 50) % 30 < dt:
+                    elapsed = self.key_timers['down'] - 50
+                    expected_repeats = int(elapsed / 30)
+                    if expected_repeats > self.key_repeat_count.get('down', 0):
                         self.soft_drop()
+                        self.key_repeat_count['down'] = expected_repeats
         else:
             self.key_pressed['down'] = False
             self.key_timers['down'] = 0
-    
+            self.key_repeat_count['down'] = 0
+
     def draw(self):
         """게임 화면 그리기"""
         WINDOW.fill(COLORS['bg'])
@@ -2283,21 +2395,22 @@ class NetworkManager:
         self.client_heartbeats = {}  # 클라이언트별 마지막 하트비트 시간
 
     def _send_data_with_length(self, conn, data):
-        """데이터 크기를 먼저 전송한 후 데이터 전송"""
+        """데이터 크기를 먼저 전송한 후 데이터 전송 (JSON 사용)"""
         try:
-            pickled = pickle.dumps(data)
-            length = len(pickled)
+            json_data = json.dumps(data).encode('utf-8')
+            length = len(json_data)
             # 4바이트로 길이 전송
             conn.sendall(length.to_bytes(4, byteorder='big'))
             # 실제 데이터 전송
-            conn.sendall(pickled)
+            conn.sendall(json_data)
             return True
         except Exception as e:
             print(f"데이터 전송 실패: {e}")
             return False
 
     def _recv_data_with_length(self, conn):
-        """데이터 크기를 먼저 받은 후 완전한 데이터 수신"""
+        """데이터 크기를 먼저 받은 후 완전한 데이터 수신 (JSON 사용)"""
+        MAX_PACKET_SIZE = 2 * 1024 * 1024  # 최대 2MB
         try:
             # 4바이트 길이 정보 수신
             length_bytes = b''
@@ -2309,6 +2422,11 @@ class NetworkManager:
 
             length = int.from_bytes(length_bytes, byteorder='big')
 
+            # 데이터 크기 제한 확인
+            if length > MAX_PACKET_SIZE:
+                print(f"패킷 크기 초과: {length} > {MAX_PACKET_SIZE}")
+                return None
+
             # 전체 데이터 수신
             data = b''
             while len(data) < length:
@@ -2317,7 +2435,10 @@ class NetworkManager:
                     return None
                 data += chunk
 
-            return pickle.loads(data)
+            return json.loads(data.decode('utf-8'))
+        except json.JSONDecodeError as e:
+            print(f"JSON 파싱 실패: {e}")
+            return None
         except Exception as e:
             raise e
 
@@ -2332,12 +2453,23 @@ class NetworkManager:
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 131072)  # 수신 버퍼 128KB
             self.socket.bind((self.host, self.port))
             self.socket.listen(3)  # 최대 3명
-            self.socket.settimeout(0.5)  # 타임아웃 증가 (0.1초 -> 0.5초)
+            self.socket.settimeout(0.5)  # accept 타임아웃
             self.connected = True
             self.player_id = 0  # 서버는 플레이어 0
+            debug_log('NET_CONN', f'서버 시작 성공 - 포트:{self.port}, my_id:{self.player_id}')
             return True
+        except OSError as e:
+            if e.errno == 10048 or e.errno == 98:  # Windows/Linux: 포트 사용 중
+                print(f"포트 {self.port}이(가) 이미 사용 중입니다. 다른 서버가 실행 중인지 확인하세요.")
+            elif e.errno == 10013 or e.errno == 13:  # 권한 부족
+                print(f"포트 {self.port}에 접근할 권한이 없습니다.")
+            else:
+                print(f"서버 시작 실패: {e}")
+            self._cleanup_socket()
+            return False
         except Exception as e:
             print(f"서버 시작 실패: {e}")
+            self._cleanup_socket()
             return False
 
     def accept_connection(self):
@@ -2351,20 +2483,22 @@ class NetworkManager:
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # Nagle 알고리즘 비활성화
             conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 131072)  # 송신 버퍼 128KB
             conn.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 131072)  # 수신 버퍼 128KB
-            conn.settimeout(0.5)  # 타임아웃 증가
+            conn.settimeout(2)  # 수신 타임아웃 2초
             player_id = len(self.clients) + 1
             self.clients.append({'conn': conn, 'id': player_id, 'addr': addr})
             self.client_heartbeats[player_id] = pygame.time.get_ticks()
 
             # 플레이어 ID 전송
             self._send_data_with_length(conn, {'type': 'player_id', 'id': player_id})
+            debug_log('NET_CONN', f'클라이언트 연결 수락 - player_id:{player_id}, addr:{addr[0]}')
 
             # 수신 스레드 시작
             threading.Thread(target=self._receive_loop_client, args=(conn, player_id), daemon=True).start()
             return True
         except socket.timeout:
             return False
-        except:
+        except Exception as e:
+            print(f"클라이언트 연결 수락 실패: {e}")
             return False
 
     def connect_to_server(self):
@@ -2375,28 +2509,50 @@ class NetworkManager:
             self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # Nagle 알고리즘 비활성화
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 131072)  # 송신 버퍼 128KB
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 131072)  # 수신 버퍼 128KB
-            self.socket.settimeout(5)
+            self.socket.settimeout(10)  # 연결 타임아웃 10초 (느린 네트워크 대비)
             self.socket.connect((self.host, self.port))
-            self.socket.settimeout(0.5)  # 타임아웃 증가
+            self.socket.settimeout(2)  # 수신 타임아웃 2초로 증가
             self.connection = self.socket
             self.connected = True
 
             # 플레이어 ID 수신
             msg = self._recv_data_with_length(self.connection)
-            if msg and msg['type'] == 'player_id':
+            if msg and isinstance(msg, dict) and msg.get('type') == 'player_id':
                 self.player_id = msg['id']
+                debug_log('NET_CONN', f'서버 연결 성공 - host:{self.host}, my_id:{self.player_id}')
+            else:
+                debug_log('NET_ERR', f'플레이어 ID 수신 실패 - 받은 데이터: {msg}')
+                self._cleanup_socket()
+                return False
 
             threading.Thread(target=self._receive_loop_server, daemon=True).start()
             return True
         except socket.timeout:
             print(f"서버 연결 시간 초과: {self.host}:{self.port}")
+            self._cleanup_socket()
             return False
         except ConnectionRefusedError:
             print(f"서버 연결 거부됨: {self.host}:{self.port} (서버가 실행 중인지 확인하세요)")
+            self._cleanup_socket()
+            return False
+        except socket.gaierror:
+            print(f"잘못된 서버 주소: {self.host}")
+            self._cleanup_socket()
             return False
         except Exception as e:
             print(f"서버 연결 실패: {e}")
+            self._cleanup_socket()
             return False
+
+    def _cleanup_socket(self):
+        """소켓 정리 헬퍼 함수"""
+        self.connected = False
+        if self.socket:
+            try:
+                self.socket.close()
+            except:
+                pass
+            self.socket = None
 
     def _receive_loop_server(self):
         """서버로부터 데이터 수신 (클라이언트용)"""
@@ -2545,8 +2701,23 @@ class NetworkManager:
 
     def close(self):
         """연결 종료"""
+        # 연결 종료 신호 전송
+        disconnect_msg = {'type': 'disconnect'}
+        if self.is_server:
+            for client in self.clients:
+                try:
+                    self._send_data_with_length(client['conn'], disconnect_msg)
+                except:
+                    pass
+
+        # 연결 상태 변경 (수신 스레드가 종료되도록)
         self.connected = False
 
+        # 스레드 종료 대기 (짧은 시간)
+        import time
+        time.sleep(0.3)
+
+        # 클라이언트 소켓 정리
         if self.is_server:
             for client in self.clients:
                 try:
@@ -2555,17 +2726,21 @@ class NetworkManager:
                     pass
             self.clients = []
 
+        # 연결 소켓 정리
         if self.connection:
             try:
                 self.connection.close()
             except:
                 pass
+            self.connection = None
 
+        # 서버 소켓 정리
         if self.socket:
             try:
                 self.socket.close()
             except:
                 pass
+            self.socket = None
 
 class MultiPlayerTetris:
     """멀티플레이 테트리스 게임 (4인 Tetrio 스타일)"""
@@ -2610,20 +2785,35 @@ class MultiPlayerTetris:
         return [i for i in range(self.player_count) if self.player_alive[i] and i != self.my_id]
 
     def calculate_attack_damage(self, lines_cleared):
-        """공격 데미지 계산 - 지운 라인의 절반 (올림)"""
+        """공격 데미지 계산 - 표준 테트리스 공격 테이블"""
         if lines_cleared == 0:
             return 0
-        # 지운 라인의 절반 (최소 1)
-        return max(1, (lines_cleared + 1) // 2)
+        # 표준 테트리스 공격량: 1줄=0, 2줄=1, 3줄=2, 4줄(테트리스)=4
+        attack_table = {1: 0, 2: 1, 3: 2, 4: 4}
+        return attack_table.get(lines_cleared, lines_cleared - 1)
 
     def add_garbage_lines(self, player_id, count):
         """쓰레기 줄 추가"""
+        debug_log('ATTACK', f'쓰레기 라인 추가 - player_id:{player_id}, count:{count}, my_id:{self.my_id}')
         game = self.games[player_id]
         for _ in range(count):
             game.grid.pop(0)
             hole_pos = random.randint(0, TETRIS_GRID_WIDTH - 1)
             garbage = [COLORS['dark_gray'] if i != hole_pos else 0 for i in range(TETRIS_GRID_WIDTH)]
             game.grid.append(garbage)
+
+        # 현재 블록의 y 좌표를 위로 이동시켜 쓰레기 라인에 맞춰 조정
+        if game.current_block:
+            game.current_block.y -= count
+            # 블록이 너무 위로 올라가면 조정
+            if game.current_block.y < 0:
+                game.current_block.y = 0
+            # 블록이 쓰레기 라인과 충돌하면 위로 밀어올림
+            while not game.valid_position() and game.current_block.y > 0:
+                game.current_block.y -= 1
+            # 그래도 충돌하면 게임 오버
+            if not game.valid_position():
+                game.game_over = True
 
     def update(self, dt):
         """게임 업데이트"""
@@ -2719,6 +2909,7 @@ class MultiPlayerTetris:
         # 데이터 송수신
         state = {
             'type': 'game_state',
+            'player_id': self.my_id,  # 플레이어 ID 추가 (서버가 식별할 수 있도록)
             'grid': my_game.grid,
             'score': my_game.score,
             'lines': my_game.lines_cleared,
@@ -2740,15 +2931,21 @@ class MultiPlayerTetris:
             if data:
                 for msg in data:
                     pid = msg.get('player_id', 0)
+                    debug_log('NET_RECV', f'[서버] 클라이언트 데이터 수신 - from_pid:{pid}, type:{msg.get("type")}', msg)
                     if pid != self.my_id and msg.get('type') == 'game_state':
                         self.all_player_states[pid] = msg
                         self._process_player_data(msg)
+                    elif pid == self.my_id:
+                        debug_log('NET_ERR', f'[서버] 경고: 자신의 ID로 데이터 수신됨! pid:{pid}, my_id:{self.my_id}')
 
             # 모든 플레이어 상태를 브로드캐스트
             broadcast_data = {
                 'type': 'broadcast',
                 'states': self.all_player_states,
-                'player_count': self.player_count
+                'player_count': self.player_count,
+                'finish_count': self.finish_count,
+                'player_rank': self.player_rank[:],
+                'player_alive': self.player_alive[:]
             }
             self.network.send_data(broadcast_data)
         else:
@@ -2760,12 +2957,31 @@ class MultiPlayerTetris:
             if data and isinstance(data, dict):
                 if data.get('type') == 'broadcast':
                     states = data.get('states', {})
+                    debug_log('NET_RECV', f'[클라이언트] 브로드캐스트 수신 - my_id:{self.my_id}, 받은 states:{list(states.keys())}')
                     for pid_str, player_state in states.items():
                         pid = int(pid_str) if isinstance(pid_str, str) else pid_str
-                        if pid != self.my_id and player_state.get('type') == 'game_state':
+                        if pid != self.my_id and player_state and player_state.get('type') == 'game_state':
+                            debug_log('PLAYER', f'[클라이언트] 상대 데이터 처리 - pid:{pid}', player_state)
                             self._process_player_data(player_state, pid)
+                        elif pid == self.my_id:
+                            debug_log('PLAYER', f'[클라이언트] 내 데이터 스킵 - pid:{pid} (정상)')
                     # 플레이어 수 업데이트
                     self.player_count = data.get('player_count', self.player_count)
+                    # 순위 정보 동기화 (서버가 권위를 가짐)
+                    if 'finish_count' in data:
+                        self.finish_count = data['finish_count']
+                    if 'player_rank' in data:
+                        server_rank = data['player_rank']
+                        for i in range(min(len(server_rank), len(self.player_rank))):
+                            self.player_rank[i] = server_rank[i]
+                        self.my_rank = self.player_rank[self.my_id]
+                    if 'player_alive' in data:
+                        server_alive = data['player_alive']
+                        for i in range(min(len(server_alive), len(self.player_alive))):
+                            if i != self.my_id:  # 자신의 상태는 로컬 유지
+                                self.player_alive[i] = server_alive[i]
+                else:
+                    debug_log('NET_RECV', f'[클라이언트] 알 수 없는 데이터 타입: {data.get("type")}', data)
 
         # 공격 애니메이션 업데이트
         self.attack_animations = [(f, t, d, tm-1) for f, t, d, tm in self.attack_animations if tm > 1]
@@ -2774,11 +2990,20 @@ class MultiPlayerTetris:
         """플레이어 데이터 처리"""
         pid = override_pid if override_pid is not None else data.get('player_id', 0)
         if pid == self.my_id or pid >= 4:
+            debug_log('PLAYER', f'데이터 처리 스킵 - pid:{pid}, my_id:{self.my_id}')
             return
 
         game = self.games[pid]
         if 'grid' in data:
-            game.grid = [row[:] for row in data['grid']]
+            # JSON에서 튜플이 리스트로 변환되므로 색상을 튜플로 복원
+            old_non_empty = sum(1 for row in game.grid for cell in row if cell != 0)
+            game.grid = [
+                [tuple(cell) if isinstance(cell, list) else cell for cell in row]
+                for row in data['grid']
+            ]
+            new_non_empty = sum(1 for row in game.grid for cell in row if cell != 0)
+            if old_non_empty != new_non_empty:
+                debug_log('GRID', f'그리드 업데이트 - pid:{pid}, 블록셀: {old_non_empty} -> {new_non_empty}')
         game.score = data.get('score', 0)
         game.lines_cleared = data.get('lines', 0)
         game.combo = data.get('combo', -1)
@@ -2793,6 +3018,16 @@ class MultiPlayerTetris:
                     self.color = color
                     self.x = x
                     self.y = y
+                    self.shape_name = 'temp'
+                    self.rotation = 0
+
+                def rotate(self, direction=1):
+                    """회전 메서드 (표시용 블록이므로 무동작)"""
+                    pass
+
+                def get_ghost_y(self, grid):
+                    """고스트 위치 계산 (표시용 블록이므로 현재 y 반환)"""
+                    return self.y
             game.current_block = TempBlock(
                 current_block_data['shape'],
                 tuple(current_block_data['color']) if isinstance(current_block_data['color'], list) else current_block_data['color'],
@@ -3380,7 +3615,20 @@ def run_tetris_multiplayer():
         pygame.time.delay(1000)
 
     # 5. 게임 루프
+    # 카운트다운 동안 쌓인 네트워크 데이터 비우기
+    discarded = network.get_received_data()
+    if discarded:
+        debug_log('GAME', f'카운트다운 중 쌓인 데이터 버림', discarded)
+
     game = MultiPlayerTetris(network, player_count)
+
+    # 게임 시작 시 상태 확인
+    debug_log('GAME', '='*50)
+    debug_log('GAME', f'게임 시작! is_server:{network.is_server}, my_id:{game.my_id}, players:{player_count}')
+    for i in range(player_count):
+        grid_cells = sum(1 for row in game.games[i].grid for cell in row if cell != 0)
+        debug_log('GAME', f'  Player {i} 초기 그리드 - 비어있지않은셀:{grid_cells}')
+    debug_log('GAME', '='*50)
 
     while True:
         dt = clock.tick(FPS)
@@ -3824,25 +4072,61 @@ def run_breakout():
         pygame.display.update()
 
 # ==================== 타이핑 게임 ====================
-class Cake(GameObject):
-    def __init__(self, x, y, target_x, target_y, target_robot=None):
+class Cupcake(GameObject):
+    """기본 공격용 컵케이크"""
+    def __init__(self, x, y, target_x, target_y, target_robot=None, word_len=0):
         super().__init__(x, y)
         self.target_robot, self.size = target_robot, 12
         dx, dy = target_x - x, target_y - y
         distance = max(1, math.sqrt(dx**2 + dy**2))
         self.speed = 30
         self.vx, self.vy = (dx / distance) * self.speed, (dy / distance) * self.speed
-        
+        self.is_powerful = False  # 기본 공격은 강력하지 않음
+        self.hit_score = word_len * 10  # 맞췄을 때 점수
+
     def update(self):
         self.x, self.y = self.x + self.vx, self.y + self.vy
         if self.x < 0 or self.x > GAME_WIDTH or self.y < 0 or self.y > HEIGHT:
             self.active = False
-            
+
     def draw(self):
         if self.active:
-            pygame.draw.circle(WINDOW, COLORS['pink'], (int(self.x), int(self.y)), self.size)
-            pygame.draw.circle(WINDOW, COLORS['brown'], (int(self.x), int(self.y)), self.size - 3)
-            pygame.draw.circle(WINDOW, COLORS['white'], (int(self.x), int(self.y)), 3)
+            if TYPING_IMAGES.get('cupcake'):
+                img = TYPING_IMAGES['cupcake']
+                WINDOW.blit(img, (int(self.x - img.get_width()//2), int(self.y - img.get_height()//2)))
+            else:
+                # 이미지가 없으면 기존 원 그리기
+                pygame.draw.circle(WINDOW, COLORS['pink'], (int(self.x), int(self.y)), self.size)
+                pygame.draw.circle(WINDOW, COLORS['brown'], (int(self.x), int(self.y)), self.size - 3)
+                pygame.draw.circle(WINDOW, COLORS['white'], (int(self.x), int(self.y)), 3)
+
+class BigCake(GameObject):
+    """강력 공격용 케이크 - 모든 적 한 방에 처치"""
+    def __init__(self, x, y, target_x, target_y, target_robot=None, word_len=0):
+        super().__init__(x, y)
+        self.target_robot, self.size = target_robot, 16
+        dx, dy = target_x - x, target_y - y
+        distance = max(1, math.sqrt(dx**2 + dy**2))
+        self.speed = 35  # 약간 더 빠름
+        self.vx, self.vy = (dx / distance) * self.speed, (dy / distance) * self.speed
+        self.is_powerful = True  # 강력 공격
+        self.hit_score = 0  # 케이크는 점수 없음
+
+    def update(self):
+        self.x, self.y = self.x + self.vx, self.y + self.vy
+        if self.x < 0 or self.x > GAME_WIDTH or self.y < 0 or self.y > HEIGHT:
+            self.active = False
+
+    def draw(self):
+        if self.active:
+            if TYPING_IMAGES.get('cake'):
+                img = TYPING_IMAGES['cake']
+                WINDOW.blit(img, (int(self.x - img.get_width()//2), int(self.y - img.get_height()//2)))
+            else:
+                # 이미지가 없으면 큰 원 그리기
+                pygame.draw.circle(WINDOW, COLORS['yellow'], (int(self.x), int(self.y)), self.size)
+                pygame.draw.circle(WINDOW, COLORS['brown'], (int(self.x), int(self.y)), self.size - 4)
+                pygame.draw.circle(WINDOW, COLORS['red'], (int(self.x), int(self.y)), 5)
 
 class Robot(GameObject):
     def __init__(self, stage):
@@ -3882,8 +4166,9 @@ class Robot(GameObject):
                         WORD_POOLS['space'] + WORD_POOLS['ocean'] +
                         WORD_POOLS['jobs'] + WORD_POOLS['world'])
 
+        self.word_pool = word_pool  # 단어 풀 저장 (빨간 로봇 단어 변경용)
         self.word = random.choice(word_pool)
-        
+
         if self.is_special:
             self.color, self.hits_required, self.hits_taken = COLORS['red'], 2, 0
             self.original_speed = self.speed
@@ -3949,12 +4234,23 @@ class Robot(GameObject):
             hits_text = FONTS['small'].render(f"x{remaining}", True, COLORS['red'])
             WINDOW.blit(hits_text, hits_text.get_rect(center=(self.x, self.y + self.size + 25)))
     
-    def hit(self):
+    def hit(self, powerful=False):
+        """적 타격 처리. powerful=True면 한 방에 처치"""
+        if powerful:
+            # 강력 공격: 무조건 한 방에 처치
+            self.active = False
+            return True
+
         if self.is_special:
             self.hits_taken += 1
             self.hit_cooldown = 10
             if self.hits_taken == 1:
                 self.speed = self.original_speed * 0.75
+                # 첫 타격 후 단어 변경 (현재 단어와 다른 단어로)
+                old_word = self.word
+                available_words = [w for w in self.word_pool if w != old_word]
+                if available_words:
+                    self.word = random.choice(available_words)
             if self.hits_taken >= self.hits_required:
                 self.active = False
                 return True
@@ -3991,6 +4287,41 @@ class Heart(GameObject):
         pygame.draw.rect(WINDOW, COLORS['white'], bg_rect)
         WINDOW.blit(word_surface, word_rect)
     
+    def is_off_screen(self):
+        return self.x < -50
+
+class CakeItem(GameObject):
+    """케이크 아이템 - 하트처럼 나타나서 입력하면 획득"""
+    def __init__(self):
+        super().__init__(GAME_WIDTH - 50, random.randint(100, HEIGHT - 150))
+        self.word, self.speed = "케이크", 1.5  # 하트보다 약간 느림
+
+    def update(self):
+        if self.active:
+            self.x -= self.speed
+
+    def draw(self):
+        if not self.active:
+            return
+
+        # 케이크 이미지 또는 기본 도형
+        if TYPING_IMAGES.get('cake_item'):
+            img = TYPING_IMAGES['cake_item']
+            WINDOW.blit(img, (int(self.x - img.get_width()//2), int(self.y - img.get_height()//2)))
+        else:
+            # 기본 케이크 모양
+            pygame.draw.rect(WINDOW, (255, 200, 150), (int(self.x - 15), int(self.y - 10), 30, 20))
+            pygame.draw.ellipse(WINDOW, COLORS['pink'], (int(self.x - 18), int(self.y - 18), 36, 16))
+            pygame.draw.circle(WINDOW, COLORS['red'], (int(self.x), int(self.y - 15)), 5)
+
+        # 단어 표시
+        word_surface = FONTS['small'].render(self.word, True, COLORS['brown'])
+        word_rect = word_surface.get_rect(center=(self.x, self.y + 35))
+        bg_rect = word_rect.inflate(6, 4)
+        pygame.draw.rect(WINDOW, (255, 245, 220), bg_rect)
+        pygame.draw.rect(WINDOW, COLORS['brown'], bg_rect, 2)
+        WINDOW.blit(word_surface, word_rect)
+
     def is_off_screen(self):
         return self.x < -50
 
@@ -4032,10 +4363,13 @@ def draw_house():
 
 def run_typing():
     pygame.key.start_text_input()
-    
+
     stage, score, hp, max_hp = 1, 0, 3, 3
     robots, hearts, cakes, particles = [], [], [], []
+    cake_items = []  # 케이크 아이템 (획득용)
+    cake_count = 0   # 보유 케이크 개수 (최대 3개)
     spawn_timer, spawn_delay, heart_spawn_timer = 0, 90, 0
+    cake_spawn_timer = 0  # 케이크 아이템 스폰 타이머
 
     target_score = STAGE_SCORE_REQUIREMENTS.get(stage, 33350 + (stage - 50) * 770)
 
@@ -4097,11 +4431,12 @@ def run_typing():
                 elif stage_clear and event.key == pygame.K_SPACE:
                     stage += 1
                     robots, hearts, cakes, particles = [], [], [], []
+                    cake_items = []  # 케이크 아이템도 초기화
                     target_score = STAGE_SCORE_REQUIREMENTS.get(stage, 33350 + (stage - 50) * 770)
                     spawn_delay = max(45, 90 - stage * 5)
-                    stage_clear, hp = False, max_hp
+                    stage_clear = False  # 하트는 스테이지 넘어가도 안 참
                     current_input, composing_text = "", ""
-                    spawn_timer, heart_spawn_timer = 0, 0
+                    spawn_timer, heart_spawn_timer, cake_spawn_timer = 0, 0, 0
                 elif not game_over and not stage_clear:
                     if event.key == pygame.K_BACKSPACE:
                         if current_input:
@@ -4110,23 +4445,41 @@ def run_typing():
                     elif event.key in [pygame.K_RETURN, pygame.K_SPACE]:
                         if current_input:
                             hit = False
-                            
-                            for heart in hearts[:]:
-                                if current_input == heart.word:
-                                    hp = min(hp + 1, max_hp)
-                                    hearts.remove(heart)
-                                    score += len(heart.word) * 10
+
+                            # 케이크 아이템 획득 체크 (획득 시 3개 충전)
+                            for cake_item in cake_items[:]:
+                                if current_input == cake_item.word:
+                                    cake_count = 3  # 케이크 3개 충전
+                                    cake_items.remove(cake_item)
+                                    # 케이크 아이템은 점수 없음
                                     hit = True
                                     break
-                            
+
+                            # 하트 획득 체크
+                            if not hit:
+                                for heart in hearts[:]:
+                                    if current_input == heart.word:
+                                        hp = min(hp + 1, max_hp)
+                                        hearts.remove(heart)
+                                        # 하트는 점수 없음
+                                        hit = True
+                                        break
+
+                            # 로봇 공격
                             if not hit:
                                 matching_robots = [r for r in robots if current_input == r.word]
                                 if matching_robots:
                                     target_robot = min(matching_robots, key=lambda r: r.x)
-                                    cakes.append(Cake(100, HEIGHT - 150, target_robot.x, target_robot.y, target_robot))
-                                    score += len(target_robot.word) * 10
+                                    word_len = len(target_robot.word)
+                                    # 케이크 보유 시 강력 공격(BigCake), 아니면 기본 공격(Cupcake)
+                                    if cake_count > 0:
+                                        cakes.append(BigCake(100, HEIGHT - 150, target_robot.x, target_robot.y, target_robot, word_len))
+                                        cake_count -= 1
+                                    else:
+                                        cakes.append(Cupcake(100, HEIGHT - 150, target_robot.x, target_robot.y, target_robot, word_len))
+                                    # 점수는 맞췄을 때 지급
                                     hit = True
-                            
+
                             current_input, composing_text = "", ""
                     elif ADMIN_MODE and event.key == pygame.K_2:
                         score = target_score
@@ -4142,22 +4495,33 @@ def run_typing():
             if heart_spawn_timer >= 1800 and hp < max_hp:
                 hearts.append(Heart())
                 heart_spawn_timer = 0
-            
+
+            # 케이크 아이템 스폰 (3단계 이상, 케이크 보유량 0일 때, 랜덤 확률)
+            cake_spawn_timer += 1
+            if cake_spawn_timer >= 300 and stage >= 3 and cake_count == 0 and len(cake_items) == 0:
+                # 5초마다 체크, 20% 확률로 스폰 (평균 25초)
+                if random.random() < 0.20:
+                    cake_items.append(CakeItem())
+                cake_spawn_timer = 0
+
             for cake in cakes[:]:
                 cake.update()
                 if not cake.active:
                     cakes.remove(cake)
                     continue
-                
+
                 if cake.target_robot and cake.target_robot.active:
                     robot = cake.target_robot
                     distance = math.sqrt((cake.x - robot.x)**2 + (cake.y - robot.y)**2)
                     if distance < robot.size:
-                        if robot.hit():
-                            for _ in range(20):
+                        # 맞췄을 때 점수 지급
+                        score += getattr(cake, 'hit_score', 0)
+                        # is_powerful이 True면 한 방에 처치
+                        if robot.hit(powerful=getattr(cake, 'is_powerful', False)):
+                            for _ in range(20 if not getattr(cake, 'is_powerful', False) else 40):
                                 particles.append(Particle(robot.x, robot.y))
                         cake.active = False
-            
+
             for robot in robots[:]:
                 robot.update()
                 if robot.is_off_screen() and robot.active:
@@ -4166,11 +4530,17 @@ def run_typing():
                         hp -= 1
                 elif not robot.active:
                     robots.remove(robot)
-            
+
             for heart in hearts[:]:
                 heart.update()
                 if heart.is_off_screen():
                     hearts.remove(heart)
+
+            # 케이크 아이템 업데이트
+            for cake_item in cake_items[:]:
+                cake_item.update()
+                if cake_item.is_off_screen():
+                    cake_items.remove(cake_item)
             
             particles = [p for p in particles if (p.update() or True) and p.life > 0]
             
@@ -4194,7 +4564,7 @@ def run_typing():
         pygame.draw.rect(WINDOW, current_concept['ground_color'], (0, HEIGHT - 120, GAME_WIDTH, 120))
         draw_house()
         
-        for obj in hearts + robots + cakes + particles:
+        for obj in hearts + robots + cakes + particles + cake_items:
             obj.draw()
         
         stage_text = FONTS['title'].render(f"단계: {stage}", True, COLORS['black'])
@@ -4216,7 +4586,29 @@ def run_typing():
             pygame.draw.circle(WINDOW, color, (x + 8, y - 5), 10)
             points = [(x, y + 5), (x - 15, y - 8), (x, y + 15), (x + 15, y - 8)]
             pygame.draw.polygon(WINDOW, color, points)
-        
+
+        # 케이크 보유량 표시 (3단계 이상부터)
+        if stage >= 3:
+            cake_x, cake_y = 10, 115
+            cake_label = FONTS['small'].render("케이크:", True, COLORS['brown'])
+            WINDOW.blit(cake_label, (cake_x, cake_y))
+            for i in range(3):
+                cx = cake_x + 70 + i * 35
+                cy = cake_y + 10
+                if i < cake_count:
+                    # 보유 케이크 (이미지 또는 도형)
+                    if TYPING_IMAGES.get('cake'):
+                        img = TYPING_IMAGES['cake']
+                        WINDOW.blit(img, (cx - img.get_width()//2, cy - img.get_height()//2))
+                    else:
+                        pygame.draw.rect(WINDOW, (255, 200, 150), (cx - 12, cy - 8, 24, 16))
+                        pygame.draw.ellipse(WINDOW, COLORS['pink'], (cx - 14, cy - 14, 28, 12))
+                        pygame.draw.circle(WINDOW, COLORS['red'], (cx, cy - 12), 4)
+                else:
+                    # 빈 슬롯 (회색)
+                    pygame.draw.rect(WINDOW, (150, 150, 150), (cx - 12, cy - 8, 24, 16))
+                    pygame.draw.rect(WINDOW, (100, 100, 100), (cx - 12, cy - 8, 24, 16), 2)
+
         input_box = pygame.Rect(GAME_WIDTH // 2 - 200, HEIGHT - 80, 400, 50)
         pygame.draw.rect(WINDOW, COLORS['red'], input_box.inflate(10, 10), 5)
         pygame.draw.rect(WINDOW, (200, 255, 200), input_box)
