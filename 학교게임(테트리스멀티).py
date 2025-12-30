@@ -2744,9 +2744,6 @@ class MultiPlayerTetris:
                         self.all_player_states[pid] = msg
                         self._process_player_data(msg)
 
-            # 디버깅: 브로드캐스트할 상태 확인
-            print(f"[Server] Broadcasting states: {list(self.all_player_states.keys())}")
-
             # 모든 플레이어 상태를 브로드캐스트
             broadcast_data = {
                 'type': 'broadcast',
@@ -2763,18 +2760,10 @@ class MultiPlayerTetris:
             if data and isinstance(data, dict):
                 if data.get('type') == 'broadcast':
                     states = data.get('states', {})
-                    # 디버깅: 받은 상태 확인
-                    print(f"[Client {self.my_id}] Received states: {list(states.keys())}")
                     for pid_str, player_state in states.items():
                         pid = int(pid_str) if isinstance(pid_str, str) else pid_str
-                        # 디버깅: 각 플레이어 상태 확인
-                        print(f"[Client {self.my_id}] Processing pid={pid}, my_id={self.my_id}, type={player_state.get('type')}")
-                        if pid != self.my_id:
-                            if player_state.get('type') == 'game_state':
-                                self._process_player_data(player_state, pid)
-                            elif player_state.get('type') == 'broadcast':
-                                # 중첩된 브로드캐스트 무시
-                                pass
+                        if pid != self.my_id and player_state.get('type') == 'game_state':
+                            self._process_player_data(player_state, pid)
                     # 플레이어 수 업데이트
                     self.player_count = data.get('player_count', self.player_count)
 
