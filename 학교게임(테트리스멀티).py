@@ -2393,6 +2393,7 @@ class NetworkManager:
         self.last_heartbeat = pygame.time.get_ticks()  # 마지막 하트비트 시간
         self.heartbeat_interval = 1000  # 하트비트 간격 (1초로 단축)
         self.client_heartbeats = {}  # 클라이언트별 마지막 하트비트 시간
+        self.latest_player_states = {}  # 각 플레이어의 최신 상태만 저장 (중복 제거)
 
     def _send_data_with_length(self, conn, data):
         """데이터 크기를 먼저 전송한 후 데이터 전송 (JSON 사용)"""
@@ -2589,7 +2590,8 @@ class NetworkManager:
                         continue
                     msg['player_id'] = player_id
                     with self.lock:
-                        self.received_data.append(msg)
+                        # 각 플레이어의 최신 상태만 저장 (중복 제거)
+                        self.latest_player_states[player_id] = msg
                     self.client_heartbeats[player_id] = pygame.time.get_ticks()
                 else:
                     # 연결 끊김
@@ -2598,6 +2600,8 @@ class NetworkManager:
                         self.clients = [c for c in self.clients if c['id'] != player_id]
                         if player_id in self.client_heartbeats:
                             del self.client_heartbeats[player_id]
+                        if player_id in self.latest_player_states:
+                            del self.latest_player_states[player_id]
                     break
             except socket.timeout:
                 continue
@@ -2608,8 +2612,9 @@ class NetworkManager:
                     self.clients = [c for c in self.clients if c['id'] != player_id]
                     if player_id in self.client_heartbeats:
                         del self.client_heartbeats[player_id]
+                    if player_id in self.latest_player_states:
+                        del self.latest_player_states[player_id]
                 break
-
     def send_heartbeat(self):
         """하트비트 전송 (연결 확인용)"""
         current_time = pygame.time.get_ticks()
@@ -2686,13 +2691,15 @@ class NetworkManager:
     def get_received_data(self):
         """수신된 데이터 가져오기"""
         with self.lock:
-            data = self.received_data
             if self.is_server:
-                self.received_data = []
+                # 각 플레이어의 최신 상태를 리스트로 반환
+                data = list(self.latest_player_states.values())
+                self.latest_player_states.clear()  # 가져간 후 초기화
+                return data
             else:
+                data = self.received_data
                 self.received_data = None
-            return data
-
+                return data
     def get_player_count(self):
         """현재 플레이어 수"""
         if self.is_server:
@@ -2772,6 +2779,10 @@ class MultiPlayerTetris:
 
         # 서버용: 모든 플레이어 상태 저장
         self.all_player_states = {}
+        
+        # 전송 빈도 제한
+        self.last_send_time = 0
+        self.send_interval = 50  # 50ms마다 전송 (20 FPS)
 
     def _get_next_target(self):
         """다음 공격 대상 선택"""
@@ -2906,53 +2917,69 @@ class MultiPlayerTetris:
                 'y': my_game.current_block.y
             }
 
-        # 데이터 송수신
-        state = {
-            'type': 'game_state',
-            'player_id': self.my_id,  # 플레이어 ID 추가 (서버가 식별할 수 있도록)
-            'grid': my_game.grid,
-            'score': my_game.score,
-            'lines': my_game.lines_cleared,
-            'combo': my_game.combo,
-            'game_over': my_game.game_over,
-            'attack': attack_damage,
-            'attack_target': attack_target,
-            'rank': self.player_rank[self.my_id],
-            'current_block': current_block_data,
-            'my_target': self.current_target  # 내 현재 타겟 정보
-        }
+        # 전송 타이밍 결정
+        current_time = pygame.time.get_ticks()
+        should_send = (current_time - self.last_send_time) >= self.send_interval
 
-        if self.network.is_server:
-            # 서버: 자신의 상태 저장
-            self.all_player_states[self.my_id] = state
+        # 중요한 이벤트는 즉시 전송
+        force_send = (
+            attack_damage > 0 or
+            my_game.game_over or
+            (my_game.lines_cleared > prev_lines)
+        )
 
-            # 클라이언트 데이터 수신 및 저장
-            data = self.network.get_received_data()
-            if data:
-                for msg in data:
-                    pid = msg.get('player_id', 0)
-                    debug_log('NET_RECV', f'[서버] 클라이언트 데이터 수신 - from_pid:{pid}, type:{msg.get("type")}', msg)
-                    if pid != self.my_id and msg.get('type') == 'game_state':
-                        self.all_player_states[pid] = msg
-                        self._process_player_data(msg)
-                    elif pid == self.my_id:
-                        debug_log('NET_ERR', f'[서버] 경고: 자신의 ID로 데이터 수신됨! pid:{pid}, my_id:{self.my_id}')
+        # 데이터 송수신 (타이밍이 되었거나 중요한 이벤트 발생 시)
+        if should_send or force_send:
+            self.last_send_time = current_time
 
-            # 모든 플레이어 상태를 브로드캐스트
-            broadcast_data = {
-                'type': 'broadcast',
-                'states': self.all_player_states,
-                'player_count': self.player_count,
-                'finish_count': self.finish_count,
-                'player_rank': self.player_rank[:],
-                'player_alive': self.player_alive[:]
+            # 데이터 패킷 생성
+            state = {
+                'type': 'game_state',
+                'player_id': self.my_id,  # 플레이어 ID 추가 (서버가 식별할 수 있도록)
+                'grid': my_game.grid,
+                'score': my_game.score,
+                'lines': my_game.lines_cleared,
+                'combo': my_game.combo,
+                'game_over': my_game.game_over,
+                'attack': attack_damage,
+                'attack_target': attack_target,
+                'rank': self.player_rank[self.my_id],
+                'current_block': current_block_data,
+                'my_target': self.current_target  # 내 현재 타겟 정보
             }
-            self.network.send_data(broadcast_data)
-        else:
-            # 클라이언트: 자신의 상태를 서버로 전송
-            self.network.send_data(state)
 
-            # 서버로부터 브로드캐스트 데이터 수신
+            if self.network.is_server:
+                # 서버: 자신의 상태 저장
+                self.all_player_states[self.my_id] = state
+
+                # 클라이언트 데이터 수신 및 저장
+                data = self.network.get_received_data()
+                if data:
+                    for msg in data:
+                        pid = msg.get('player_id', 0)
+                        debug_log('NET_RECV', f'[서버] 클라이언트 데이터 수신 - from_pid:{pid}, type:{msg.get("type")}', msg)
+                        if pid != self.my_id and msg.get('type') == 'game_state':
+                            self.all_player_states[pid] = msg
+                            self._process_player_data(msg)
+                        elif pid == self.my_id:
+                            debug_log('NET_ERR', f'[서버] 경고: 자신의 ID로 데이터 수신됨! pid:{pid}, my_id:{self.my_id}')
+
+                # 모든 플레이어 상태를 브로드캐스트
+                broadcast_data = {
+                    'type': 'broadcast',
+                    'states': self.all_player_states,
+                    'player_count': self.player_count,
+                    'finish_count': self.finish_count,
+                    'player_rank': self.player_rank[:],
+                    'player_alive': self.player_alive[:]
+                }
+                self.network.send_data(broadcast_data)
+            else:
+                # 클라이언트: 자신의 상태를 서버로 전송
+                self.network.send_data(state)
+
+        # 서버로부터 브로드캐스트 데이터 수신 (항상 확인)
+        if not self.network.is_server:
             data = self.network.get_received_data()
             if data and isinstance(data, dict):
                 if data.get('type') == 'broadcast':
